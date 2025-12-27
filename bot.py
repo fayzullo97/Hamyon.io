@@ -264,7 +264,7 @@ class DebtBot:
         
         # Create confirmation message
         confirmation_text = (
-            "✅ *Tasdiqlash kerak:*\n\n"
+            "✅ *Tasdiqlash kerak:*\n"
             f"💰 Summa: {debt_info['amount']:,} {debt_info.get('currency', 'so\'m')}\n"
             f"📝 Sabab: {debt_info.get('reason', 'Sababsiz')}\n"
             f"👤 Qarz beruvchi: {creditor_name}\n"
