@@ -24,8 +24,8 @@ openai.api_key = os.getenv('OPENAI_API_KEY')
 class DebtBot:
     def __init__(self):
         self.db = db
-        self.pending_debts = {}  # Store pending debt confirmations
-        self.user_context = {}   # Store user conversation context
+        self.pending_debts = {}
+        self.user_context = {}
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -87,19 +87,15 @@ class DebtBot:
         """Handle voice messages"""
         user = update.effective_user
         
-        # Send processing message
         processing_msg = await update.message.reply_text("🎤 Ovozli xabaringizni tinglayapman...")
         
         try:
-            # Get voice file
             voice = update.message.voice
             file = await context.bot.get_file(voice.file_id)
             
-            # Download voice file
             voice_path = f"voice_{user.id}_{datetime.now().timestamp()}.ogg"
             await file.download_to_drive(voice_path)
             
-            # Transcribe using Whisper
             with open(voice_path, 'rb') as audio_file:
                 transcript = openai.audio.transcriptions.create(
                     model="whisper-1",
@@ -109,7 +105,6 @@ class DebtBot:
             
             transcribed_text = transcript.text
             
-            # Clean up voice file
             if os.path.exists(voice_path):
                 os.remove(voice_path)
             
@@ -118,7 +113,6 @@ class DebtBot:
                 parse_mode='Markdown'
             )
             
-            # Parse the debt information using GPT
             debt_info = await self.parse_debt_info(transcribed_text, user)
             
             if debt_info.get('error'):
@@ -129,13 +123,11 @@ class DebtBot:
                 )
                 return
             
-            # Request missing information
             missing = self.check_missing_info(debt_info)
             if missing:
                 await self.request_missing_info(update, context, debt_info, missing, processing_msg)
                 return
             
-            # Create debt record and request confirmation
             await self.create_debt_confirmation(update, context, debt_info, processing_msg)
             
         except Exception as e:
@@ -212,7 +204,6 @@ class DebtBot:
         
         question = questions.get(missing[0], "Ma'lumot to'liq emas")
         
-        # Store pending debt for follow-up
         self.user_context[update.effective_user.id] = {
             'debt_info': debt_info,
             'missing': missing,
@@ -226,28 +217,23 @@ class DebtBot:
         """Create debt and send confirmation request"""
         user = update.effective_user
         
-        # Determine creditor and debtor based on direction
         direction = debt_info.get('direction')
         
         if direction == 'owe_me':
-            # Someone owes me
             creditor_id = user.id
             creditor_name = user.first_name
             debtor_name = debt_info.get('creditor_name') or debt_info.get('debtor_name')
         else:
-            # I owe someone
             debtor_id = user.id
             debtor_name = user.first_name
             creditor_name = debt_info.get('creditor_name') or debt_info.get('debtor_name')
         
-        # Try to find the other user
         other_user = None
         if debtor_name and debtor_name.startswith('@'):
             other_user = self.db.find_user_by_username(debtor_name)
         elif creditor_name and creditor_name.startswith('@'):
             other_user = self.db.find_user_by_username(creditor_name)
         
-        # Store pending confirmation
         debt_id = f"pending_{user.id}_{int(datetime.now().timestamp())}"
         self.pending_debts[debt_id] = {
             'creator_id': user.id,
@@ -262,20 +248,20 @@ class DebtBot:
             'other_user': other_user
         }
         
-        # Create confirmation message
+        newline = '\n'
         confirmation_text = (
-            "✅ *Tasdiqlash kerak:*\n\n"
-            f"💰 Summa: {debt_info['amount']:,} {debt_info.get('currency', 'so\'m')}\n"
-            f"📝 Sabab: {debt_info.get('reason', 'Sababsiz')}\n"
-            f"👤 Qarz beruvchi: {creditor_name}\n"
-            f"👤 Qarz oluvchi: {debtor_name}\n\n"
+            f"✅ *Tasdiqlash kerak:*{newline}{newline}"
+            f"💰 Summa: {debt_info['amount']:,} {debt_info.get('currency', 'so\'m')}{newline}"
+            f"📝 Sabab: {debt_info.get('reason', 'Sababsiz')}{newline}"
+            f"👤 Qarz beruvchi: {creditor_name}{newline}"
+            f"👤 Qarz oluvchi: {debtor_name}{newline}{newline}"
         )
         
         if not other_user:
             confirmation_text += (
-                "⚠️ *Diqqat:* Foydalanuvchi topilmadi.\n"
-                "Agar username bilsangiz, @username formatida kiriting.\n"
-                "Yoki kontaktni ulashing.\n\n"
+                f"⚠️ *Diqqat:* Foydalanuvchi topilmadi.{newline}"
+                f"Agar username bilsangiz, @username formatida kiriting.{newline}"
+                f"Yoki kontaktni ulashing.{newline}{newline}"
             )
         
         confirmation_text += "Bu ma'lumot to'g'rimi?"
@@ -305,25 +291,19 @@ class DebtBot:
         
         if data.startswith('confirm_'):
             await self.confirm_debt_callback(query, data)
-        
         elif data.startswith('cancel_'):
             debt_id = data.replace('cancel_', '')
             if debt_id in self.pending_debts:
                 del self.pending_debts[debt_id]
             await query.edit_message_text("❌ Qarz bekor qilindi.")
-        
         elif data.startswith('accept_debt_'):
             await self.accept_debt_callback(query, data)
-        
         elif data.startswith('dispute_debt_'):
             await self.dispute_debt_callback(query, data)
-        
         elif data.startswith('pay_'):
             await self.initiate_payment(query, data)
-        
         elif data.startswith('cancel_debt_'):
             await self.cancel_debt_callback(query, data)
-        
         elif data.startswith('remind_'):
             await self.send_reminder_callback(query, data)
     
@@ -337,7 +317,6 @@ class DebtBot:
         
         debt_data = self.pending_debts[debt_id]
         
-        # Check if other user exists
         if not debt_data.get('creditor_id') or not debt_data.get('debtor_id'):
             await query.edit_message_text(
                 "❌ Ikkinchi foydalanuvchi topilmadi.\n"
@@ -345,7 +324,6 @@ class DebtBot:
             )
             return
         
-        # Save to database
         created_debt_id = self.db.create_debt(
             creator_id=debt_data['creator_id'],
             creditor_id=debt_data['creditor_id'],
@@ -355,20 +333,19 @@ class DebtBot:
             reason=debt_data['reason']
         )
         
-        # Auto-confirm creator's side
         if debt_data['creator_id'] == debt_data['creditor_id']:
             self.db.confirm_debt(created_debt_id, debt_data['creator_id'])
         elif debt_data['creator_id'] == debt_data['debtor_id']:
             self.db.confirm_debt(created_debt_id, debt_data['creator_id'])
         
-        # Send notification to other party
         other_user_id = debt_data['debtor_id'] if debt_data['creator_id'] == debt_data['creditor_id'] else debt_data['creditor_id']
         
+        newline = '\n'
         notification_text = (
-            "🔔 *Yangi qarz xabarnomasi*\n\n"
-            f"💰 Summa: {debt_data['amount']:,} {debt_data['currency']}\n"
-            f"📝 Sabab: {debt_data['reason']}\n"
-            f"👤 Yaratuvchi: {debt_data.get('creditor_name') if debt_data['creator_id'] == debt_data['creditor_id'] else debt_data.get('debtor_name')}\n\n"
+            f"🔔 *Yangi qarz xabarnomasi*{newline}{newline}"
+            f"💰 Summa: {debt_data['amount']:,} {debt_data['currency']}{newline}"
+            f"📝 Sabab: {debt_data['reason']}{newline}"
+            f"👤 Yaratuvchi: {debt_data.get('creditor_name') if debt_data['creator_id'] == debt_data['creditor_id'] else debt_data.get('debtor_name')}{newline}{newline}"
         )
         
         if debt_data['creator_id'] == debt_data['creditor_id']:
@@ -376,7 +353,7 @@ class DebtBot:
         else:
             notification_text += "Sizdan qarz sifatida qayd qilindi."
         
-        notification_text += "\n\nIltimos, tasdiqlang:"
+        notification_text += f"{newline}{newline}Iltimos, tasdiqlang:"
         
         keyboard = [
             [
@@ -395,15 +372,14 @@ class DebtBot:
             )
             
             await query.edit_message_text(
-                "✅ *Qarz yaratildi!*\n\n"
-                f"💰 Summa: {debt_data['amount']:,} {debt_data['currency']}\n"
-                f"📝 Sabab: {debt_data['reason']}\n\n"
-                "Ikkinchi tomonga xabarnoma yuborildi.\n"
+                f"✅ *Qarz yaratildi!*{newline}{newline}"
+                f"💰 Summa: {debt_data['amount']:,} {debt_data['currency']}{newline}"
+                f"📝 Sabab: {debt_data['reason']}{newline}{newline}"
+                f"Ikkinchi tomonga xabarnoma yuborildi.{newline}"
                 "Ular tasdiqlaganidan keyin qarz faollashadi.",
                 parse_mode='Markdown'
             )
             
-            # Create notification in DB
             self.db.create_notification(
                 other_user_id, 
                 created_debt_id, 
@@ -418,7 +394,6 @@ class DebtBot:
                 "Ikkinchi foydalanuvchi botni ishga tushirmagan bo'lishi mumkin."
             )
         
-        # Clean up pending debt
         del self.pending_debts[debt_id]
     
     async def accept_debt_callback(self, query, data):
@@ -426,20 +401,19 @@ class DebtBot:
         debt_id = int(data.replace('accept_debt_', ''))
         user_id = query.from_user.id
         
-        # Confirm debt
         if self.db.confirm_debt(debt_id, user_id):
             debt = self.db.get_debt(debt_id)
             
+            newline = '\n'
             if debt and debt['status'] == 'active':
                 await query.edit_message_text(
-                    "✅ *Qarz tasdiqlandi va faollashdi!*\n\n"
-                    f"💰 Summa: {debt['amount']:,} {debt['currency']}\n"
-                    f"📝 Sabab: {debt['reason']}\n\n"
+                    f"✅ *Qarz tasdiqlandi va faollashdi!*{newline}{newline}"
+                    f"💰 Summa: {debt['amount']:,} {debt['currency']}{newline}"
+                    f"📝 Sabab: {debt['reason']}{newline}{newline}"
                     "Qarz endi faol va to'lanishi mumkin.",
                     parse_mode='Markdown'
                 )
                 
-                # Notify creator
                 creator_id = debt['creator_id']
                 try:
                     await query.get_bot().send_message(
@@ -463,7 +437,6 @@ class DebtBot:
         debt = self.db.get_debt(debt_id)
         
         if debt:
-            # Cancel the debt
             self.db.cancel_debt(debt_id, debt['creator_id'])
             
             await query.edit_message_text(
@@ -471,7 +444,6 @@ class DebtBot:
                 "Qarz bekor qilindi."
             )
             
-            # Notify creator
             try:
                 await query.get_bot().send_message(
                     chat_id=debt['creator_id'],
@@ -484,7 +456,6 @@ class DebtBot:
         """Show all user's debts"""
         user_id = update.effective_user.id
         
-        # Get debts from database
         debts = self.db.get_user_debts(user_id)
         
         if not debts:
@@ -494,7 +465,8 @@ class DebtBot:
             )
             return
         
-        message = "📊 *Mening qarzlarim:*\n\n"
+        nl = '\n'
+        message = f"📊 *Mening qarzlarim:*{nl}{nl}"
         
         total_owe = 0
         total_owed = 0
@@ -505,22 +477,22 @@ class DebtBot:
             if debt['debtor_id'] == user_id:
                 total_owe += balance
                 status_icon = "🔴" if debt['status'] == 'active' else "🟡"
-                message += f"{status_icon} *#{debt['id']}* Men {debt['creditor_name']}ga qarzdorman\n"
-                message += f"   💰 {balance:,} so'm\n"
-                message += f"   📝 {debt['reason']}\n"
-                message += f"   📅 {debt['created_at'][:10]}\n\n"
+                message += f"{status_icon} *#{debt['id']}* Men {debt['creditor_name']}ga qarzdorman{nl}"
+                message += f"   💰 {balance:,} so'm{nl}"
+                message += f"   📝 {debt['reason']}{nl}"
+                message += f"   📅 {debt['created_at'][:10]}{nl}{nl}"
             else:
                 total_owed += balance
                 status_icon = "🟢" if debt['status'] == 'active' else "🟡"
-                message += f"{status_icon} *#{debt['id']}* {debt['debtor_name']} menga qarz\n"
-                message += f"   💰 {balance:,} so'm\n"
-                message += f"   📝 {debt['reason']}\n"
-                message += f"   📅 {debt['created_at'][:10]}\n\n"
+                message += f"{status_icon} *#{debt['id']}* {debt['debtor_name']} menga qarz{nl}"
+                message += f"   💰 {balance:,} so'm{nl}"
+                message += f"   📝 {debt['reason']}{nl}"
+                message += f"   📅 {debt['created_at'][:10]}{nl}{nl}"
         
-        message += f"━━━━━━━━━━━━━━━━\n"
-        message += f"💰 *Jami:*\n"
-        message += f"❌ Men to'lashim kerak: {total_owe:,} so'm\n"
-        message += f"✅ Menga to'lashlari kerak: {total_owed:,} so'm\n"
+        message += f"━━━━━━━━━━━━━━━━{nl}"
+        message += f"💰 *Jami:*{nl}"
+        message += f"❌ Men to'lashim kerak: {total_owe:,} so'm{nl}"
+        message += f"✅ Menga to'lashlari kerak: {total_owed:,} so'm{nl}"
         message += f"📊 Balans: {(total_owed - total_owe):+,} so'm"
         
         await update.message.reply_text(message, parse_mode='Markdown')
@@ -534,23 +506,23 @@ class DebtBot:
             await update.message.reply_text("💰 Sizda to'lash uchun qarzlar yo'q! 🎉")
             return
         
-        message = "💰 *Men qarzdorman:*\n\n"
+        nl = '\n'
+        message = f"💰 *Men qarzdorman:*{nl}{nl}"
         total = 0
         
         for debt in debts:
             balance = self.db.get_debt_balance(debt['id'])
             total += balance
-            message += f"🔴 *#{debt['id']}* {debt['creditor_name']}ga\n"
-            message += f"   💵 {balance:,} so'm\n"
-            message += f"   📝 {debt['reason']}\n"
-            message += f"   📅 {debt['created_at'][:10]}\n\n"
+            message += f"🔴 *#{debt['id']}* {debt['creditor_name']}ga{nl}"
+            message += f"   💵 {balance:,} so'm{nl}"
+            message += f"   📝 {debt['reason']}{nl}"
+            message += f"   📅 {debt['created_at'][:10]}{nl}{nl}"
         
-        message += f"━━━━━━━━━━━━━━━━\n"
+        message += f"━━━━━━━━━━━━━━━━{nl}"
         message += f"💰 Jami: {total:,} so'm"
         
-        # Add payment buttons for each debt
         keyboard = []
-        for debt in debts[:5]:  # Show up to 5 debts
+        for debt in debts[:5]:
             balance = self.db.get_debt_balance(debt['id'])
             if balance > 0:
                 keyboard.append([
@@ -573,18 +545,19 @@ class DebtBot:
             await update.message.reply_text("💵 Sizga hech kim qarz emas.")
             return
         
-        message = "💵 *Menga qarzlar:*\n\n"
+        nl = '\n'
+        message = f"💵 *Menga qarzlar:*{nl}{nl}"
         total = 0
         
         for debt in debts:
             balance = self.db.get_debt_balance(debt['id'])
             total += balance
-            message += f"🟢 *#{debt['id']}* {debt['debtor_name']}dan\n"
-            message += f"   💵 {balance:,} so'm\n"
-            message += f"   📝 {debt['reason']}\n"
-            message += f"   📅 {debt['created_at'][:10]}\n\n"
+            message += f"🟢 *#{debt['id']}* {debt['debtor_name']}dan{nl}"
+            message += f"   💵 {balance:,} so'm{nl}"
+            message += f"   📝 {debt['reason']}{nl}"
+            message += f"   📅 {debt['created_at'][:10]}{nl}{nl}"
         
-        message += f"━━━━━━━━━━━━━━━━\n"
+        message += f"━━━━━━━━━━━━━━━━{nl}"
         message += f"💰 Jami: {total:,} so'm"
         
         await update.message.reply_text(message, parse_mode='Markdown')
@@ -615,13 +588,372 @@ class DebtBot:
             elif debt['status'] == 'paid':
                 paid_count += 1
         
+        nl = '\n'
         stats_message = (
-            "📊 *Statistika:*\n\n"
-            f"📈 Faol qarzlar: {active_count}\n"
-            f"🕐 Kutilmoqda: {pending_count}\n"
-            f"✅ To'langan: {paid_count}\n\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"💰 *Moliyaviy holat:*\n"
-            f"❌ Men qarzdorman: {total_owe:,} so'm\n"
-            f"✅\n"
-        )# Updated
+            f"📊 *Statistika:*{nl}{nl}"
+            f"📈 Faol qarzlar: {active_count}{nl}"
+            f"🕐 Kutilmoqda: {pending_count}{nl}"
+            f"✅ To'langan: {paid_count}{nl}{nl}"
+            f"━━━━━━━━━━━━━━━━{nl}"
+            f"💰 *Moliyaviy holat:*{nl}"
+            f"❌ Men qarzdorman: {total_owe:,} so'm{nl}"
+            f"✅ Menga qarz: {total_owed:,} so'm{nl}"
+            f"📊 Balans: {(total_owed - total_owe):+,} so'm"
+        )
+        
+        await update.message.reply_text(stats_message, parse_mode='Markdown')
+    
+    async def show_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show complete history of all debts"""
+        user_id = update.effective_user.id
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT d.*, 
+                   c.first_name as creditor_name,
+                   b.first_name as debtor_name
+            FROM debts d
+            JOIN users c ON d.creditor_id = c.user_id
+            JOIN users b ON d.debtor_id = b.user_id
+            WHERE d.creditor_id = ? OR d.debtor_id = ?
+            ORDER BY d.created_at DESC
+            LIMIT 20
+        ''', (user_id, user_id))
+        
+        debts = cursor.fetchall()
+        conn.close()
+        
+        if not debts:
+            await update.message.reply_text("📜 Tarix bo'sh.")
+            return
+        
+        nl = '\n'
+        message = f"📜 *Tarix (oxirgi 20):*{nl}{nl}"
+        
+        for debt in debts:
+            debt_dict = dict(debt)
+            status_emoji = {
+                'pending': '🟡',
+                'active': '🔵',
+                'paid': '✅',
+                'cancelled': '❌'
+            }
+            
+            emoji = status_emoji.get(debt_dict['status'], '⚪')
+            message += f"{emoji} *#{debt_dict['id']}* "
+            
+            if debt_dict['debtor_id'] == user_id:
+                message += f"{debt_dict['creditor_name']}ga qarzdor{nl}"
+            else:
+                message += f"{debt_dict['debtor_name']}dan qarz{nl}"
+            
+            message += f"   💰 {debt_dict['amount']:,} so'm{nl}"
+            message += f"   📝 {debt_dict['reason']}{nl}"
+            message += f"   📅 {debt_dict['created_at'][:10]}{nl}"
+            message += f"   Status: {debt_dict['status']}{nl}{nl}"
+        
+        await update.message.reply_text(message, parse_mode='Markdown')
+    
+    async def send_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send reminder to debtor"""
+        user_id = update.effective_user.id
+        debts = self.db.get_debts_owed_to_me(user_id)
+        
+        if not debts:
+            await update.message.reply_text("💵 Sizga hech kim qarz emas.")
+            return
+        
+        keyboard = []
+        for debt in debts:
+            balance = self.db.get_debt_balance(debt['id'])
+            if balance > 0:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"🔔 #{debt['id']} - {debt['debtor_name']} ({balance:,} so'm)",
+                        callback_data=f"remind_{debt['id']}"
+                    )
+                ])
+        
+        if keyboard:
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                "🔔 *Eslatma yuborish*\n\nQaysi qarz uchun eslatma yubormoqchisiz?",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        else:
+            await update.message.reply_text("Barcha qarzlar to'langan!")
+    
+    async def handle_contact(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle shared contact"""
+        contact = update.message.contact
+        user_id = update.effective_user.id
+        
+        self.db.create_user(
+            contact.user_id,
+            None,
+            contact.first_name,
+            contact.last_name
+        )
+        
+        if user_id in self.user_context and 'debt_info' in self.user_context[user_id]:
+            debt_ctx = self.user_context[user_id]
+            debt_info = debt_ctx['debt_info']
+            
+            if debt_info.get('direction') == 'owe_me':
+                debt_info['creditor_name'] = contact.first_name
+            else:
+                debt_info['debtor_name'] = contact.first_name
+            
+            debt_ctx['contact_user_id'] = contact.user_id
+            
+            await update.message.reply_text(
+                f"✅ Kontakt qabul qilindi: {contact.first_name}\n\n"
+                "Iltimos, davom etish uchun qolgan ma'lumotlarni kiriting."
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ Kontakt saqlandi: {contact.first_name}\n\n"
+                "Endi ovozli xabar yuboring va bu foydalanuvchi bilan qarz yarating."
+            )
+    
+    async def initiate_payment(self, query, data):
+        """Initiate partial payment"""
+        debt_id = int(data.replace('pay_', ''))
+        debt = self.db.get_debt(debt_id)
+        
+        if not debt:
+            await query.edit_message_text("❌ Qarz topilmadi.")
+            return
+        
+        balance = self.db.get_debt_balance(debt_id)
+        
+        if balance <= 0:
+            await query.edit_message_text("✅ Bu qarz allaqachon to'langan!")
+            return
+        
+        self.user_context[query.from_user.id] = {
+            'action': 'payment',
+            'debt_id': debt_id,
+            'balance': balance
+        }
+        
+        nl = '\n'
+        await query.message.reply_text(
+            f"💳 *To'lov:*{nl}{nl}"
+            f"Qarz: #{debt_id}{nl}"
+            f"Qolgan summa: {balance:,} so'm{nl}{nl}"
+            "Qancha to'lamoqchisiz? (raqam kiriting)",
+            parse_mode='Markdown'
+        )
+    
+    async def cancel_debt_callback(self, query, data):
+        """Cancel debt (only creator can cancel)"""
+        debt_id = int(data.replace('cancel_debt_', ''))
+        user_id = query.from_user.id
+        
+        if self.db.cancel_debt(debt_id, user_id):
+            await query.edit_message_text("✅ Qarz bekor qilindi.")
+        else:
+            await query.edit_message_text("❌ Faqat qarz yaratuvchi bekor qilishi mumkin.")
+    
+    async def send_reminder_callback(self, query, data):
+        """Send reminder to debtor"""
+        debt_id = int(data.replace('remind_', ''))
+        debt = self.db.get_debt(debt_id)
+        
+        if not debt or debt['creditor_id'] != query.from_user.id:
+            await query.edit_message_text("❌ Xatolik yuz berdi.")
+            return
+        
+        balance = self.db.get_debt_balance(debt_id)
+        
+        if balance <= 0:
+            await query.edit_message_text("✅ Bu qarz allaqachon to'langan!")
+            return
+        
+        nl = '\n'
+        reminder_text = (
+            f"🔔 *Eslatma*{nl}{nl}"
+            f"Sizning {debt['creditor_name']}ga qarzingiz:{nl}"
+            f"💰 Summa: {balance:,} so'm{nl}"
+            f"📝 Sabab: {debt['reason']}{nl}"
+            f"📅 Yaratilgan: {debt['created_at'][:10]}{nl}{nl}"
+            "Iltimos, qarzni to'lashni unutmang!"
+        )
+        
+        try:
+            await query.get_bot().send_message(
+                chat_id=debt['debtor_id'],
+                text=reminder_text,
+                parse_mode='Markdown'
+            )
+            
+            await query.edit_message_text(
+                f"✅ Eslatma yuborildi!{nl}{nl}"
+                f"📨 {debt['debtor_name']}ga eslatma yuborildi."
+            )
+            
+            self.db.create_notification(
+                debt['debtor_id'],
+                debt_id,
+                "Qarz haqida eslatma olindi",
+                'reminder'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error sending reminder: {e}")
+            await query.edit_message_text(
+                "❌ Eslatma yuborilmadi.\n"
+                "Foydalanuvchi botni bloklagan bo'lishi mumkin."
+            )
+    
+    async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text messages"""
+        text = update.message.text
+        user_id = update.effective_user.id
+        
+        if text == "📊 Mening qarzlarim":
+            await self.show_my_debts(update, context)
+        elif text == "💰 Men qarzdorman":
+            await self.show_i_owe(update, context)
+        elif text == "💵 Menga qarzlar":
+            await self.show_owed_to_me(update, context)
+        elif text == "📜 Tarix":
+            await self.show_history(update, context)
+        elif text == "ℹ️ Yordam":
+            await self.help_command(update, context)
+        elif text == "📊 Statistika":
+            await self.show_statistics(update, context)
+        elif text.startswith("🔔") or text.lower().startswith("eslatma"):
+            await self.send_reminder(update, context)
+        else:
+            if user_id in self.user_context:
+                await self.handle_context_response(update, context)
+            else:
+                await update.message.reply_text(
+                    "📱 Iltimos, qarz yoki xarajat haqida *ovozli xabar* yuboring.\n\n"
+                    "Yoki kontakt ulashing va quyidagi tugmalardan foydalaning:",
+                    parse_mode='Markdown'
+                )
+    
+    async def handle_context_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle user responses in context"""
+        user_id = update.effective_user.id
+        text = update.message.text
+        user_ctx = self.user_context[user_id]
+        
+        if user_ctx.get('action') == 'payment':
+            try:
+                amount = float(text.replace(',', '').replace(' ', ''))
+                debt_id = user_ctx['debt_id']
+                balance = user_ctx['balance']
+                
+                if amount <= 0:
+                    await update.message.reply_text("❌ Summa 0 dan katta bo'lishi kerak.")
+                    return
+                
+                if amount > balance:
+                    await update.message.reply_text(
+                        f"❌ To'lov summasi qoldiqdan oshib ketdi.\n"
+                        f"Qoldiq: {balance:,} so'm"
+                    )
+                    return
+                
+                payment_id = self.db.add_payment(debt_id, user_id, amount)
+                debt = self.db.get_debt(debt_id)
+                self.db.confirm_payment(payment_id)
+                new_balance = self.db.get_debt_balance(debt_id)
+                
+                nl = '\n'
+                if new_balance == 0:
+                    await update.message.reply_text(
+                        f"✅ *To'lov qabul qilindi!*{nl}{nl}"
+                        f"💵 To'langan: {amount:,} so'm{nl}"
+                        "🎉 Qarz to'liq to'landi!",
+                        parse_mode='Markdown'
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"✅ *To'lov qabul qilindi!*{nl}{nl}"
+                        f"💵 To'langan: {amount:,} so'm{nl}"
+                        f"📊 Qoldiq: {new_balance:,} so'm",
+                        parse_mode='Markdown'
+                    )
+                
+                try:
+                    await context.bot.send_message(
+                        chat_id=debt['creditor_id'],
+                        text=f"💰 {debt['debtor_name']} {amount:,} so'm to'ladi!{nl}"
+                             f"Qarz: #{debt_id}{nl}"
+                             f"Qoldiq: {new_balance:,} so'm",
+                        parse_mode='Markdown'
+                    )
+                except:
+                    pass
+                
+                del self.user_context[user_id]
+                
+            except ValueError:
+                await update.message.reply_text("❌ Iltimos, to'g'ri raqam kiriting.")
+        
+        elif 'debt_info' in user_ctx:
+            debt_info = user_ctx['debt_info']
+            missing = user_ctx['missing']
+            step = user_ctx['step']
+            
+            field = missing[step]
+            if field == 'amount':
+                try:
+                    amount_str = text.replace(',', '').replace(' ', '').lower()
+                    if 'ming' in amount_str:
+                        amount_str = amount_str.replace('ming', '000')
+                    amount = float(re.sub(r'[^\d.]', '', amount_str))
+                    debt_info['amount'] = amount
+                except:
+                    await update.message.reply_text("❌ Summani tushunmadim. Iltimos, raqam kiriting (masalan: 50000)")
+                    return
+            elif field in ['creditor_name', 'debtor_name']:
+                debt_info[field] = text
+            elif field == 'reason':
+                debt_info['reason'] = text
+            
+            if step + 1 < len(missing):
+                user_ctx['step'] = step + 1
+                next_field = missing[step + 1]
+                questions = {
+                    'amount': "💰 Qancha pul? (masalan: 50000)",
+                    'creditor_name': "👤 Kim qarz berdi? (ism yoki @username)",
+                    'debtor_name': "👤 Kimga qarz berdingiz? (ism yoki @username)",
+                    'reason': "📝 Nima uchun?"
+                }
+                await update.message.reply_text(questions[next_field])
+            else:
+                del self.user_context[user_id]
+                processing_msg = await update.message.reply_text("⏳ Qayd qilyapman...")
+                await self.create_debt_confirmation(update, context, debt_info, processing_msg)
+
+def main():
+    """Start the bot"""
+    TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    
+    if not TOKEN:
+        raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set")
+    
+    application = Application.builder().token(TOKEN).build()
+    
+    bot = DebtBot()
+    
+    application.add_handler(CommandHandler("start", bot.start))
+    application.add_handler(CommandHandler("help", bot.help_command))
+    application.add_handler(MessageHandler(filters.VOICE, bot.handle_voice))
+    application.add_handler(MessageHandler(filters.CONTACT, bot.handle_contact))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_text))
+    application.add_handler(CallbackQueryHandler(bot.handle_callback))
+    
+    logger.info("Bot starting...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()
