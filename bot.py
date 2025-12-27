@@ -268,7 +268,7 @@ class DebtBot:
             f"💰 Summa: {debt_info['amount']:,} {debt_info.get('currency', 'so\'m')}\n"
             f"📝 Sabab: {debt_info.get('reason', 'Sababsiz')}\n"
             f"👤 Qarz beruvchi: {creditor_name}\n"
-            f"👤 Qarz oluvchi: {debtor_name}\n\n"
+            f"👤 Qarz oluvchi: {debtor_name}\n"
         )
         
         if not other_user:
@@ -368,7 +368,7 @@ class DebtBot:
             "🔔 *Yangi qarz xabarnomasi*\n\n"
             f"💰 Summa: {debt_data['amount']:,} {debt_data['currency']}\n"
             f"📝 Sabab: {debt_data['reason']}\n"
-            f"👤 Yaratuvchi: {debt_data.get('creditor_name') if debt_data['creator_id'] == debt_data['creditor_id'] else debt_data.get('debtor_name')}\n\n"
+            f"👤 Yaratuvchi: {debt_data.get('creditor_name') if debt_data['creator_id'] == debt_data['creditor_id'] else debt_data.get('debtor_name')}\n"
         )
         
         if debt_data['creator_id'] == debt_data['creditor_id']:
@@ -397,7 +397,7 @@ class DebtBot:
             await query.edit_message_text(
                 "✅ *Qarz yaratildi!*\n\n"
                 f"💰 Summa: {debt_data['amount']:,} {debt_data['currency']}\n"
-                f"📝 Sabab: {debt_data['reason']}\n\n"
+                f"📝 Sabab: {debt_data['reason']}\n"
                 "Ikkinchi tomonga xabarnoma yuborildi.\n"
                 "Ular tasdiqlaganidan keyin qarz faollashadi.",
                 parse_mode='Markdown'
@@ -515,7 +515,7 @@ class DebtBot:
                 message += f"{status_icon} *#{debt['id']}* {debt['debtor_name']} menga qarz\n"
                 message += f"   💰 {balance:,} so'm\n"
                 message += f"   📝 {debt['reason']}\n"
-                message += f"   📅 {debt['created_at'][:10]}\n\n"
+                message += f"   📅 {debt['created_at'][:10]}\n"
         
         message += f"━━━━━━━━━━━━━━━━\n"
         message += f"💰 *Jami:*\n"
