@@ -624,4 +624,4 @@ class DebtBot:
             f"💰 *Moliyaviy holat:*\n"
             f"❌ Men qarzdorman: {total_owe:,} so'm\n"
             f"✅\n"
-        )
+        )# Updated
