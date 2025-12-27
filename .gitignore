@@ -1,1 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
 venv/
+ENV/
+
+# Environment variables
+*.env
+*.env.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Voice files
+*.ogg
+*.mp3
+*.wav
+
+# Logs
+*.log
+
+# Railway
+.railway/
