@@ -23,6 +23,8 @@ class DebtBot:
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         self.db.create_user(user.id, user.username, user.first_name, user.last_name)
+        if user.username:
+            self.db.link_pending_debts(f'@{user.username}', user.id)  # Link any pending debts
         
         keyboard = [[KeyboardButton("📊 Mening qarzlarim"), KeyboardButton("💰 Men qarzdorman")],
                     [KeyboardButton("💵 Menga qarzlar"), KeyboardButton("📜 Tarix")],
@@ -173,10 +175,14 @@ class DebtBot:
             creditor_name = debt_info.get('creditor_name') or debt_info.get('debtor_name')
         
         other_user = None
+        debtor_username = None
+        creditor_username = None
         if debtor_name and debtor_name.startswith('@'):
             other_user = self.db.find_user_by_username(debtor_name)
+            debtor_username = debtor_name if not other_user else None
         elif creditor_name and creditor_name.startswith('@'):
             other_user = self.db.find_user_by_username(creditor_name)
+            creditor_username = creditor_name if not other_user else None
         
         debt_id = f"pending_{user.id}_{int(datetime.now().timestamp())}"
         self.pending_debts[debt_id] = {
@@ -185,6 +191,8 @@ class DebtBot:
             'debtor_id': debtor_id if direction == 'i_owe' else (other_user['user_id'] if other_user else None),
             'creditor_name': creditor_name,
             'debtor_name': debtor_name,
+            'creditor_username': creditor_username,
+            'debtor_username': debtor_username,
             'amount': debt_info['amount'],
             'currency': debt_info.get('currency', "so'm"),
             'reason': debt_info.get('reason', 'Sababsiz'),
@@ -244,17 +252,15 @@ class DebtBot:
         
         debt_data = self.pending_debts[debt_id]
         
-        if not debt_data.get('creditor_id') or not debt_data.get('debtor_id'):
-            await query.edit_message_text("❌ Ikkinchi foydalanuvchi topilmadi.")
-            return
-        
         created_debt_id = self.db.create_debt(
             creator_id=debt_data['creator_id'],
             creditor_id=debt_data['creditor_id'],
             debtor_id=debt_data['debtor_id'],
             amount=debt_data['amount'],
             currency=debt_data['currency'],
-            reason=debt_data['reason']
+            reason=debt_data['reason'],
+            creditor_username=debt_data.get('creditor_username'),
+            debtor_username=debt_data.get('debtor_username')
         )
         
         if debt_data['creator_id'] == debt_data['creditor_id']:
@@ -265,22 +271,30 @@ class DebtBot:
         other_user_id = (debt_data['debtor_id'] if debt_data['creator_id'] == debt_data['creditor_id'] 
                         else debt_data['creditor_id'])
         
-        notification_text = ("🔔 *Yangi qarz*\n\n"
-                           f"💰 Summa: {debt_data['amount']:,} so'm\n"
-                           f"📝 Sabab: {debt_data['reason']}\n\n"
-                           "Iltimos, tasdiqlang:")
-        
-        keyboard = [[InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"accept_debt_{created_debt_id}"),
-                    InlineKeyboardButton("❌ E'tiroz", callback_data=f"dispute_debt_{created_debt_id}")]]
-        
-        try:
-            await query.get_bot().send_message(
-                chat_id=other_user_id,
-                text=notification_text,
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+        notification_sent = False
+        if other_user_id is not None:
+            notification_text = ("🔔 *Yangi qarz*\n\n"
+                               f"💰 Summa: {debt_data['amount']:,} so'm\n"
+                               f"📝 Sabab: {debt_data['reason']}\n\n"
+                               "Iltimos, tasdiqlang:")
             
+            keyboard = [[InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"accept_debt_{created_debt_id}"),
+                        InlineKeyboardButton("❌ E'tiroz", callback_data=f"dispute_debt_{created_debt_id}")]]
+            
+            try:
+                await query.get_bot().send_message(
+                    chat_id=other_user_id,
+                    text=notification_text,
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                
+                self.db.create_notification(other_user_id, created_debt_id, notification_text, 'debt_created')
+                notification_sent = True
+            except Exception as e:
+                logger.error(f"Notification error: {e}")
+        
+        if notification_sent:
             await query.edit_message_text(
                 f"✅ Qarz yaratildi!\n\n"
                 f"💰 {debt_data['amount']:,} so'm\n"
@@ -288,12 +302,14 @@ class DebtBot:
                 "Xabarnoma yuborildi.",
                 parse_mode='Markdown'
             )
-            
-            self.db.create_notification(other_user_id, created_debt_id, notification_text, 'debt_created')
-            
-        except Exception as e:
-            logger.error(f"Notification error: {e}")
-            await query.edit_message_text("⚠️ Qarz yaratildi, lekin xabarnoma yuborilmadi.")
+        else:
+            await query.edit_message_text(
+                f"✅ Qarz yaratildi!\n\n"
+                f"💰 {debt_data['amount']:,} so'm\n"
+                f"📝 {debt_data['reason']}\n\n"
+                "⚠️ Xabarnoma yuborilmadi (foydalanuvchi ro'yxatdan o'tmagan).",
+                parse_mode='Markdown'
+            )
         
         del self.pending_debts[debt_id]
     async def adduser_callback(self, query, data):
@@ -487,8 +503,8 @@ class DebtBot:
         cursor.execute('''
             SELECT d.*, c.first_name as creditor_name, b.first_name as debtor_name
             FROM debts d
-            JOIN users c ON d.creditor_id = c.user_id
-            JOIN users b ON d.debtor_id = b.user_id
+            LEFT JOIN users c ON d.creditor_id = c.user_id
+            LEFT JOIN users b ON d.debtor_id = b.user_id
             WHERE d.creditor_id = ? OR d.debtor_id = ?
             ORDER BY d.created_at DESC LIMIT 20
         ''', (user_id, user_id))
@@ -509,9 +525,9 @@ class DebtBot:
             message += f"{emoji} *#{d['id']}* "
             
             if d['debtor_id'] == user_id:
-                message += f"{d['creditor_name']}ga qarzdor\n"
+                message += f"{d['creditor_name'] or d['creditor_username']}ga qarzdor\n"
             else:
-                message += f"{d['debtor_name']}dan qarz\n"
+                message += f"{d['debtor_name'] or d['debtor_username']}dan qarz\n"
             
             message += f"   💰 {d['amount']:,} so'm\n   📝 {d['reason']}\n"
             message += f"   📅 {d['created_at'][:10]}\n   Status: {d['status']}\n\n"
@@ -524,6 +540,10 @@ class DebtBot:
         
         if not debt or debt['creditor_id'] != query.from_user.id:
             await query.edit_message_text("❌ Xatolik.")
+            return
+        
+        if debt['debtor_id'] is None:
+            await query.edit_message_text("❌ Eslatma yuborib bo'lmaydi (foydalanuvchi ro'yxatdan o'tmagan).")
             return
         
         balance = self.db.get_debt_balance(debt_id)
@@ -695,12 +715,21 @@ class DebtBot:
                         "Endi tasdiqlash tugmasini bosing."
                     )
                 else:
+                    debt_data = self.pending_debts[debt_id]
+                    clean_username = username.lstrip('@')
+                    if debt_data.get('direction') == 'owe_me':
+                        debt_data['debtor_id'] = None
+                        debt_data['debtor_username'] = f'@{clean_username}'
+                        debt_data['debtor_name'] = clean_username.capitalize()
+                    else:
+                        debt_data['creditor_id'] = None
+                        debt_data['creditor_username'] = f'@{clean_username}'
+                        debt_data['creditor_name'] = clean_username.capitalize()
+                    debt_data['other_user'] = None
                     await update.message.reply_text(
-                        "❌ Foydalanuvchi topilmadi.\n\n"
-                        "Iltimos:\n"
-                        "• To'g'ri @username kiriting\n"
-                        "• Yoki kontakt ulashing\n"
-                        "• Foydalanuvchi botni /start qilgan bo'lishi kerak"
+                        f"✅ Username saqlandi: @{clean_username}\n"
+                        "Foydalanuvchi botga kirganda avto yangilanadi.\n"
+                        "Endi tasdiqlang."
                     )
             
             del self.user_context[user_id]
