@@ -148,7 +148,8 @@ class DebtBot:
             'message_id': processing_msg.message_id
         }
         
-        await processing_msg.edit_text(f"❓ {questions.get(missing[0], 'Ma\'lumot kerak')}")
+        question_text = questions.get(missing[0], "Ma'lumot kerak")
+        await processing_msg.edit_text(f"❓ {question_text}")
     
     async def create_debt_confirmation(self, update, context, debt_info, processing_msg):
         user = update.effective_user
