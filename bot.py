@@ -65,9 +65,7 @@ class DebtBot:
             file = await context.bot.get_file(voice.file_id)
             voice_path = f"voice_{user.id}_{datetime.now().timestamp()}.ogg"
             await file.download_to_drive(voice_path)
-            
-            # with open(voice_path, 'rb') as audio_file:
-            #     transcript = openai.audio.transcriptions.create(model="whisper-1", file=audio_file, language="uz")
+        
             with open(voice_path, "rb") as audio_file:
                 transcript = client.audio.transcriptions.create(model="whisper-1",file=audio_file)
             transcribed_text = transcript.text
