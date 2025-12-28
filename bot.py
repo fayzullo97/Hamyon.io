@@ -668,7 +668,43 @@ class DebtBot:
                 
             except ValueError:
                 await update.message.reply_text("❌ Iltimos, to'g'ri raqam kiriting.")
-        
+        # Handle adding username for pending debt
+        if user_ctx.get('action') == 'add_username':
+            debt_id = user_ctx['debt_id']
+            username = text.strip()
+            
+            if debt_id in self.pending_debts:
+                # Find user by username
+                other_user = self.db.find_user_by_username(username)
+                
+                if other_user:
+                    debt_data = self.pending_debts[debt_id]
+                    
+                    # Update the debt with found user
+                    if debt_data.get('direction') == 'owe_me':
+                        debt_data['debtor_id'] = other_user['user_id']
+                        debt_data['debtor_name'] = other_user['first_name']
+                    else:
+                        debt_data['creditor_id'] = other_user['user_id']
+                        debt_data['creditor_name'] = other_user['first_name']
+                    
+                    debt_data['other_user'] = other_user
+                    
+                    await update.message.reply_text(
+                        f"✅ Foydalanuvchi topildi: {other_user['first_name']}\n\n"
+                        "Endi tasdiqlash tugmasini bosing."
+                    )
+                else:
+                    await update.message.reply_text(
+                        "❌ Foydalanuvchi topilmadi.\n\n"
+                        "Iltimos:\n"
+                        "• To'g'ri @username kiriting\n"
+                        "• Yoki kontakt ulashing\n"
+                        "• Foydalanuvchi botni /start qilgan bo'lishi kerak"
+                    )
+            
+            del self.user_context[user_id]
+            return
         elif 'debt_info' in user_ctx:
             debt_info = user_ctx['debt_info']
             missing = user_ctx['missing']
