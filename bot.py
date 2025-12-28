@@ -400,7 +400,74 @@ class DebtBot:
             'group_debts': group_debts,
             'processing_msg_id': processing_msg_id
         })
-    
+    async def final_confirm_group_debts(self, query):
+        """Create individual debts after final confirmation"""
+        user_id = query.from_user.id
+        user_ctx = self.user_context.get(user_id, {})
+        group_debts = user_ctx.get('group_debts', [])
+        
+        if not group_debts:
+            await query.answer("❌ Ma'lumot topilmadi.")
+            return
+        
+        created_count = 0
+        for debt_info in group_debts:
+            try:
+                # Create debt in database
+                debt_id = self.db.create_debt(
+                    creator_id=user_id,
+                    creditor_id=user_id,  # Creator is always creditor in group expenses
+                    debtor_id=debt_info.get('debtor_id'),
+                    amount=debt_info['amount'],
+                    currency=debt_info.get('currency', "so'm"),
+                    reason=debt_info['reason'],
+                    creditor_username=None,
+                    debtor_username=debt_info.get('debtor_username') if not debt_info.get('debtor_id') else None
+                )
+                
+                # Auto-confirm creator side
+                self.db.confirm_debt(debt_id, user_id)
+                
+                # Send notification to debtor if registered
+                if debt_info.get('debtor_id'):
+                    notification_text = (
+                        "🔔 *Yangi umumiy xarajat qarzingiz*\n\n"
+                        f"💰 Summa: {debt_info['amount']:,.0f} so'm\n"
+                        f"📝 Sabab: {debt_info['reason']}\n"
+                        f"👤 Qarz beruvchi: {query.from_user.first_name}\n\n"
+                        "Iltimos, tasdiqlang:"
+                    )
+                    
+                    keyboard = [[
+                        InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"accept_debt_{debt_id}"),
+                        InlineKeyboardButton("❌ E'tiroz", callback_data=f"dispute_debt_{debt_id}")
+                    ]]
+                    
+                    try:
+                        await query.get_bot().send_message(
+                            chat_id=debt_info['debtor_id'],
+                            text=notification_text,
+                            parse_mode='Markdown',
+                            reply_markup=InlineKeyboardMarkup(keyboard)
+                        )
+                        self.db.create_notification(debt_info['debtor_id'], debt_id, notification_text, 'group_debt_created')
+                    except Exception as e:
+                        logger.error(f"Notification error for debt {debt_id}: {e}")
+                
+                created_count += 1
+                
+            except Exception as e:
+                logger.error(f"Error creating group debt: {e}")
+        
+        del self.user_context[user_id]
+        
+        await query.edit_message_text(
+            f"✅ *Guruh qarzlari yaratildi!*\n\n"
+            f"📊 Yaratilgan qarzlar: {created_count}\n"
+            f"🔔 Ro'yxatdan o'tgan a'zolarga xabarnomalar yuborildi.\n"
+            f"⏳ Ro'yxatdan o'tmagan a'zolar botga kirganida xabarnoma olishadi.",
+            parse_mode='Markdown'
+        )
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
@@ -414,7 +481,9 @@ class DebtBot:
         if data == 'confirm_group':
             await self.confirm_group_debts(query)
             return
-        
+        if data == 'final_confirm_group':
+            await self.final_confirm_group_debts(query)
+            return
         if data == 'cancel_group':
             del self.user_context[query.from_user.id]
             await query.edit_message_text("❌ Bekor qilindi.")
