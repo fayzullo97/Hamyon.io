@@ -2,7 +2,6 @@ import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-import openai
 from openai import OpenAI
 from datetime import datetime
 import json
@@ -13,8 +12,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 db = Database()
-openai.api_key = os.getenv('OPENAI_API_KEY')
-client = OpenAI()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 class DebtBot:
     def __init__(self):
         self.db = db
