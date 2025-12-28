@@ -3,6 +3,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import openai
+from openai import OpenAI
 from datetime import datetime
 import json
 import re
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 db = Database()
 openai.api_key = os.getenv('OPENAI_API_KEY')
-
+client = OpenAI()
 class DebtBot:
     def __init__(self):
         self.db = db
@@ -66,9 +67,10 @@ class DebtBot:
             voice_path = f"voice_{user.id}_{datetime.now().timestamp()}.ogg"
             await file.download_to_drive(voice_path)
             
-            with open(voice_path, 'rb') as audio_file:
-                transcript = openai.audio.transcriptions.create(model="whisper-1", file=audio_file, language="uz")
-            
+            # with open(voice_path, 'rb') as audio_file:
+            #     transcript = openai.audio.transcriptions.create(model="whisper-1", file=audio_file, language="uz")
+            with open(voice_path, "rb") as audio_file:
+                transcript = client.audio.transcriptions.create(model="whisper-1",file=audio_file,language="uz")
             transcribed_text = transcript.text
             if os.path.exists(voice_path):
                 os.remove(voice_path)
