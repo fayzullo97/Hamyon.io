@@ -357,33 +357,7 @@ class DebtBot:
                 'processing_msg_id': processing_msg_id
             }
             await query.edit_message_text(f"❓ {debtors[0]} uchun qancha? (so'm)")
-    async def collect_group_usernames(self, query, split_info):
-        """Collect telegram usernames or contacts for each group member"""
-        user_id = query.from_user.id
-        user_ctx = self.user_context.get(user_id, {})
-        
-        group_debts = split_info.get('group_debts', [])
-        if not group_debts:
-            await query.answer("❌ Ma'lumot topilmadi.")
-            return
-        
-        # Get unique debtors (excluding payer)
-        debtors = list(set([debt['debtor_name'] for debt in group_debts]))
-        
-        self.user_context[user_id] = {
-            'action': 'collect_usernames',
-            'group_debts': group_debts,
-            'debtors': debtors,
-            'debtor_usernames': {},
-            'current_debtor_index': 0,
-            'processing_msg_id': split_info.get('processing_msg_id')
-        }
-        
-        await query.edit_message_text(
-            f"👤 {debtors[0]} uchun telegram username yoki kontaktni ulashing:\n\n"
-            f"Masalan: @username\n"
-            f"Yoki 'Share Contact' tugmasini bosing."
-        )
+
     async def confirm_group_debts(self, query):
         """Collect usernames before creating group debts"""
         user_id = query.from_user.id
@@ -395,11 +369,25 @@ class DebtBot:
             await query.answer("❌ Ma'lumot topilmadi.")
             return
         
-        # Start username collection
-        await self.collect_group_usernames(query, {
+        # Get unique debtors (excluding payer)
+        debtors = list(set([debt['debtor_name'] for debt in group_debts]))
+        
+        # Update context for username collection
+        self.user_context[user_id] = {
+            'action': 'collect_usernames',
             'group_debts': group_debts,
+            'debtors': debtors,
+            'debtor_usernames': {},
+            'current_debtor_index': 0,
             'processing_msg_id': processing_msg_id
-        })
+        }
+        
+        # Ask for first debtor's username
+        await query.edit_message_text(
+            f"👤 {debtors[0]} uchun telegram username kiriting:\n\n"
+            f"Masalan: @username\n\n"
+            f"Yoki kontakt ulashing."
+        )
     async def final_confirm_group_debts(self, query):
         """Create individual debts after final confirmation"""
         user_id = query.from_user.id
