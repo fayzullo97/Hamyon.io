@@ -121,25 +121,68 @@ class DebtBot:
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": """Sen qarz tahlilchisan. Matnni tahlil qiling va quyidagi JSONni qaytaring. Matn o'zbek, rus va ingliz tillarida bo'lishi mumkin, aralash bo'lishi mumkin. Har qanday matndan ma'lumot chiqarib oling, hatto tartibsiz bo'lsa ham.
                     
-                    Agar matn umumiy xarajat haqida bo'lsa (masalan, biror kishi to'lagan va boshqalar bo'lishishi kerak), "is_group": true, "payer_name": to'lovchi ism, "participants": [ishtirokchilar ro'yxati, masalan ["Murad", "Ibrohim", "Men"]], "total_amount": jami summa qaytaring.
-                    
-                    Agar ma'lumot to'liq bo'lmasa yoki noaniq bo'lsa, "clarification_needed": true, va "clarification_question": "Savol matni" (masalan, "Kim kimga qarz berdi?") qaytaring. Faqat aniq bo'lmagan qismlar uchun savol bering.
-                    
-                    Aks holda, quyidagilarni qaytaring:
-                    - amount: raqam (50 ming = 50000, 160 ming = 160000, faqat raqam)
-                    - currency: "so'm" yoki aniqlanmagan bo'lsa "so'm" (standart)
-                    - creditor_name: kim qarz berdi (ism yoki @username)
-                    - debtor_name: kim qarz oldi (ism yoki @username)
-                    - reason: sabab (masalan, "obedga", "etik olish")
-                    - direction: "i_owe" (men qarz berdim) yoki "owe_me" (menga qarz berdi)
-                    
+                    {"role": "system", "content": """Sen qarz va umumiy xarajatlarni tahlil qiluvchi AI yordamchisan. Matn o'zbek, rus va ingliz tillarida aralash bo'lishi mumkin.
+
+                    VAZIFA: Matndan qarz yoki umumiy xarajat ma'lumotlarini chiqarib ol va JSON formatida qaytaring.
+
+                    === UMUMIY XARAJAT (Group Expense) ===
+                    Agar matn umumiy xarajat haqida bo'lsa (bir kishi to'lagan, boshqalar bo'lishishi kerak), qaytaring:
+                    {
+                        "is_group": true,
+                        "payer_name": "to'lovchi ism yoki 'Men'",
+                        "participants": ["ism1", "ism2", "Men"],  // Barcha ishtirokchilar, to'lovchini ham qo'shib
+                        "total_amount": raqam,
+                        "reason": "sabab",
+                        "currency": "so'm"
+                    }
+
                     Misollar:
-                    - "Alisher menga 50 ming so'm qarz berdi lunch uchun" -> direction: "owe_me", creditor_name: "Alisher", amount: 50000, reason: "lunch uchun"
-                    - "Bugun obedga chiqganda 160.000 to'ladim. Murad, man и Ibrohim chiqdik" -> is_group: true, payer_name: "Men", participants: ["Murad", "Ibrohim", "Men"], total_amount: 160000, reason: "obedga"
-                    
-                    Irrelevant ma'lumotni filtrlang, faqat qarz haqidagi qismini oling. Agar tushunmasangiz, clarification_needed qaytaring."""},
+                    - "Bugun обедда 230000 to'ladim. Murod, Ibrohim va man" -> is_group: true, payer_name: "Men", participants: ["Murod", "Ibrohim", "Men"], total_amount: 230000
+                    - "Kafe uchun 150 ming to'ladim Dilnoza bilan" -> is_group: true, payer_name: "Men", participants: ["Dilnoza", "Men"], total_amount: 150000
+
+                    === ODDIY QARZ (Simple Debt) ===
+                    Agar oddiy qarz bo'lsa (2 kishi o'rtasida), qaytaring:
+                    {
+                        "amount": raqam,
+                        "currency": "so'm",
+                        "creditor_name": "qarz beruvchi",
+                        "debtor_name": "qarz oluvchi",
+                        "reason": "sabab",
+                        "direction": "i_owe" yoki "owe_me"
+                    }
+
+                    Qoidalar:
+                    - "menga qarz berdi" / "мне дал" = direction: "owe_me"
+                    - "men qarz berdim" / "я дал" = direction: "i_owe"
+                    - "qarzdor" / "должен" = direction: "owe_me"
+
+                    === ANIQ EMAS (Clarification Needed) ===
+                    Agar ma'lumot yetarli emas yoki noaniq bo'lsa:
+                    {
+                        "clarification_needed": true,
+                        "clarification_question": "Aniq savol (o'zbekcha)"
+                    }
+
+                    Savollar:
+                    - Kim to'ladi? (Who paid?)
+                    - Jami qancha? (Total amount?)
+                    - Kimlar bilan? (With whom?)
+                    - Qanday bo'lish kerak? (How to split?)
+
+                    === RAQAMLAR ===
+                    - "50 ming" = 50000
+                    - "150 мин" = 150000  
+                    - "230000" = 230000
+                    - "230.000" = 230000
+                    - Vergul va nuqtalarni olib tashlang
+
+                    === ISMLAR ===
+                    - "man", "men", "я" = "Men"
+                    - Rus va o'zbek ismlari: Murod, Ibrohim, Asadbek, Dilnoza, Алишер, Мурод
+                    - Username: @username formatida saqlang
+
+                    MUHIM: Faqat JSON qaytaring, boshqa matn yo'q!"""},
                     {"role": "user", "content": text}
                 ],
                 temperature=0.3
@@ -314,8 +357,35 @@ class DebtBot:
                 'processing_msg_id': processing_msg_id
             }
             await query.edit_message_text(f"❓ {debtors[0]} uchun qancha? (so'm)")
-    
+    async def collect_group_usernames(self, query, split_info):
+        """Collect telegram usernames or contacts for each group member"""
+        user_id = query.from_user.id
+        user_ctx = self.user_context.get(user_id, {})
+        
+        group_debts = split_info.get('group_debts', [])
+        if not group_debts:
+            await query.answer("❌ Ma'lumot topilmadi.")
+            return
+        
+        # Get unique debtors (excluding payer)
+        debtors = list(set([debt['debtor_name'] for debt in group_debts]))
+        
+        self.user_context[user_id] = {
+            'action': 'collect_usernames',
+            'group_debts': group_debts,
+            'debtors': debtors,
+            'debtor_usernames': {},
+            'current_debtor_index': 0,
+            'processing_msg_id': split_info.get('processing_msg_id')
+        }
+        
+        await query.edit_message_text(
+            f"👤 {debtors[0]} uchun telegram username yoki kontaktni ulashing:\n\n"
+            f"Masalan: @username\n"
+            f"Yoki 'Share Contact' tugmasini bosing."
+        )
     async def confirm_group_debts(self, query):
+        """Collect usernames before creating group debts"""
         user_id = query.from_user.id
         user_ctx = self.user_context.get(user_id, {})
         group_debts = user_ctx.get('group_debts', [])
@@ -325,13 +395,11 @@ class DebtBot:
             await query.answer("❌ Ma'lumot topilmadi.")
             return
         
-        for debt_info in group_debts:
-            # Create individual debt for each
-            processing_msg = await query.get_bot().send_message(chat_id=query.message.chat_id, text="⏳ Qarz yaratilyapti...")
-            await self.create_debt_confirmation(query, None, debt_info, processing_msg)  # Note: context is None here, adjust if needed
-        
-        del self.user_context[user_id]
-        await query.edit_message_text("✅ Guruh qarzlari yaratildi!")
+        # Start username collection
+        await self.collect_group_usernames(query, {
+            'group_debts': group_debts,
+            'processing_msg_id': processing_msg_id
+        })
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -815,6 +883,77 @@ class DebtBot:
                 
             except ValueError:
                 await update.message.reply_text("❌ Iltimos, to'g'ri raqam kiriting.")
+        elif user_ctx.get('action') == 'collect_usernames':
+            # Collecting usernames for group members
+            debtors = user_ctx['debtors']
+            current_index = user_ctx['current_debtor_index']
+            username = text.strip()
+            
+            # Try to find user
+            other_user = self.db.find_user_by_username(username)
+            
+            if other_user:
+                user_ctx['debtor_usernames'][debtors[current_index]] = {
+                    'user_id': other_user['user_id'],
+                    'username': f"@{other_user['username']}",
+                    'first_name': other_user['first_name']
+                }
+                confirmation_msg = f"✅ Topildi: {other_user['first_name']}"
+            else:
+                # Store username for future linking
+                clean_username = username.lstrip('@')
+                user_ctx['debtor_usernames'][debtors[current_index]] = {
+                    'user_id': None,
+                    'username': f"@{clean_username}",
+                    'first_name': debtors[current_index]
+                }
+                confirmation_msg = f"✅ Username saqlandi: @{clean_username} (botga kirishi kutilmoqda)"
+            
+            await update.message.reply_text(confirmation_msg)
+            
+            # Move to next debtor or finish
+            if current_index + 1 < len(debtors):
+                user_ctx['current_debtor_index'] = current_index + 1
+                await update.message.reply_text(
+                    f"👤 {debtors[current_index + 1]} uchun telegram username yoki kontaktni ulashing:\n\n"
+                    f"Masalan: @username"
+                )
+            else:
+                # All usernames collected, show final confirmation
+                group_debts = user_ctx['group_debts']
+                debtor_usernames = user_ctx['debtor_usernames']
+                
+                # Update group debts with collected usernames
+                for debt in group_debts:
+                    debtor_name = debt['debtor_name']
+                    if debtor_name in debtor_usernames:
+                        user_info = debtor_usernames[debtor_name]
+                        debt['debtor_id'] = user_info['user_id']
+                        debt['debtor_username'] = user_info['username']
+                
+                # Show final confirmation
+                confirmation_text = "✅ *Yakuniy tasdiqlash:*\n\n"
+                total = 0
+                for debt in group_debts:
+                    confirmation_text += f"• {debt['debtor_name']} ({debt.get('debtor_username', 'username yo\'q')}): {debt['amount']:,.0f} so'm\n"
+                    total += debt['amount']
+                
+                confirmation_text += f"\n💰 Jami: {total:,.0f} so'm\n"
+                confirmation_text += f"📝 Sabab: {group_debts[0]['reason']}\n\n"
+                confirmation_text += "Tasdiqlaysizmi?"
+                
+                keyboard = [
+                    [InlineKeyboardButton("✅ Tasdiqlash", callback_data="final_confirm_group")],
+                    [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_group")]
+                ]
+                
+                user_ctx['action'] = 'final_confirm_group'
+                
+                await update.message.reply_text(
+                    confirmation_text,
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
         elif user_ctx.get('action') == 'clarification':
             # Re-parse with additional clarification
             original_text = user_ctx['original_text']
