@@ -230,6 +230,8 @@ class DebtBot:
             await self.dispute_debt_callback(query, data)
         elif data.startswith('pay_'):
             await self.initiate_payment(query, data)
+        elif data.startswith('adduser_'):
+            await self.adduser_callback(query, data)
         elif data.startswith('remind_'):
             await self.send_reminder_callback(query, data)
     
@@ -294,7 +296,25 @@ class DebtBot:
             await query.edit_message_text("⚠️ Qarz yaratildi, lekin xabarnoma yuborilmadi.")
         
         del self.pending_debts[debt_id]
-    
+    async def adduser_callback(self, query, data):
+        """Handle adding username for pending debt"""
+        debt_id = data.replace('adduser_', '')
+        
+        if debt_id not in self.pending_debts:
+            await query.edit_message_text("❌ Qarz topilmadi yoki muddati o'tgan.")
+            return
+        
+        # Store the debt_id in user context
+        self.user_context[query.from_user.id] = {
+            'action': 'add_username',
+            'debt_id': debt_id
+        }
+        
+        await query.message.reply_text(
+            "👤 Foydalanuvchi username kiriting:\n\n"
+            "Masalan: @fayzkhanov\n\n"
+            "Yoki kontakt ulashing."
+        )
     async def accept_debt_callback(self, query, data):
         debt_id = int(data.replace('accept_debt_', ''))
         user_id = query.from_user.id
