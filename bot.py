@@ -92,6 +92,19 @@ class DebtBot:
                 await processing_msg.edit_text(f"❌ {debt_info['error']}\n\nIltimos, qaytadan urinib ko'ring.")
                 return
             
+            if debt_info.get('is_group'):
+                self.user_context[user.id] = {
+                    'action': 'split_type',
+                    'debt_info': debt_info,
+                    'processing_msg_id': processing_msg.message_id
+                }
+                keyboard = [
+                    [InlineKeyboardButton("🟰 Teng bo'lish", callback_data="split_equal")],
+                    [InlineKeyboardButton("📊 Turli bo'lish", callback_data="split_unequal")]
+                ]
+                await processing_msg.edit_text("❓ Umumiy xarajatlarni qanday bo'lish kerak?", reply_markup=InlineKeyboardMarkup(keyboard))
+                return
+            
             missing = self.check_missing_info(debt_info)
             if missing:
                 await self.request_missing_info(update, context, debt_info, missing, processing_msg)
@@ -110,6 +123,8 @@ class DebtBot:
                 messages=[
                     {"role": "system", "content": """Sen qarz tahlilchisan. Matnni tahlil qiling va quyidagi JSONni qaytaring. Matn o'zbek, rus va ingliz tillarida bo'lishi mumkin, aralash bo'lishi mumkin. Har qanday matndan ma'lumot chiqarib oling, hatto tartibsiz bo'lsa ham.
                     
+                    Agar matn umumiy xarajat haqida bo'lsa (masalan, biror kishi to'lagan va boshqalar bo'lishishi kerak), "is_group": true, "payer_name": to'lovchi ism, "participants": [ishtirokchilar ro'yxati, masalan ["Murad", "Ibrohim", "Men"]], "total_amount": jami summa qaytaring.
+                    
                     Agar ma'lumot to'liq bo'lmasa yoki noaniq bo'lsa, "clarification_needed": true, va "clarification_question": "Savol matni" (masalan, "Kim kimga qarz berdi?") qaytaring. Faqat aniq bo'lmagan qismlar uchun savol bering.
                     
                     Aks holda, quyidagilarni qaytaring:
@@ -122,7 +137,7 @@ class DebtBot:
                     
                     Misollar:
                     - "Alisher menga 50 ming so'm qarz berdi lunch uchun" -> direction: "owe_me", creditor_name: "Alisher", amount: 50000, reason: "lunch uchun"
-                    - "Bugun obedga to'landi общий 160 ming, Murod, Ibrohim и ман" -> Agar noaniq bo'lsa, clarification_needed: true, clarification_question: "Kim kimga qancha qarz berdi?"
+                    - "Bugun obedga chiqganda 160.000 to'ladim. Murad, man и Ibrohim chiqdik" -> is_group: true, payer_name: "Men", participants: ["Murad", "Ibrohim", "Men"], total_amount: 160000, reason: "obedga"
                     
                     Irrelevant ma'lumotni filtrlang, faqat qarz haqidagi qismini oling. Agar tushunmasangiz, clarification_needed qaytaring."""},
                     {"role": "user", "content": text}
@@ -237,10 +252,105 @@ class DebtBot:
         await processing_msg.edit_text(confirmation_text, parse_mode='Markdown', 
                                       reply_markup=InlineKeyboardMarkup(keyboard))
     
+    async def handle_group_split(self, query, split_type):
+        user_id = query.from_user.id
+        user_ctx = self.user_context.get(user_id, {})
+        debt_info = user_ctx.get('debt_info', {})
+        processing_msg_id = user_ctx.get('processing_msg_id')
+        
+        if not debt_info:
+            await query.answer("❌ Kontekst topilmadi.")
+            return
+        
+        participants = debt_info.get('participants', [])
+        payer_name = debt_info.get('payer_name', '')
+        total_amount = debt_info.get('total_amount', 0)
+        reason = debt_info.get('reason', 'Umumiy xarajat')
+        
+        # Assume "Men" means the current user
+        if payer_name.lower() == 'men':
+            payer_name = query.from_user.first_name
+        
+        # Filter out payer from participants
+        debtors = [p for p in participants if p.lower() not in ['men', payer_name.lower()]]
+        num_debtors = len(debtors)
+        
+        if split_type == 'equal':
+            per_person = total_amount / (num_debtors + 1)  # Including payer, but debtors pay back
+            group_debts = []
+            for debtor in debtors:
+                group_debts.append({
+                    'direction': 'owe_me',
+                    'creditor_name': payer_name,
+                    'debtor_name': debtor,
+                    'amount': per_person,
+                    'currency': 'so\'m',
+                    'reason': reason
+                })
+            
+            # Store group debts for confirmation
+            self.user_context[user_id] = {
+                'action': 'confirm_group',
+                'group_debts': group_debts,
+                'processing_msg_id': processing_msg_id
+            }
+            
+            confirmation_text = f"✅ Teng bo'lish: Har bir kishi {per_person:,.0f} so'm to'lashi kerak.\n\nTasdiqlaysizmi?"
+            keyboard = [
+                [InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm_group")],
+                [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_group")]
+            ]
+            await query.edit_message_text(confirmation_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        elif split_type == 'unequal':
+            self.user_context[user_id] = {
+                'action': 'unequal_split',
+                'debtors': debtors,
+                'current_debtor_index': 0,
+                'amounts': [0] * num_debtors,
+                'total_amount': total_amount,
+                'payer_name': payer_name,
+                'reason': reason,
+                'processing_msg_id': processing_msg_id
+            }
+            await query.edit_message_text(f"❓ {debtors[0]} uchun qancha? (so'm)")
+    
+    async def confirm_group_debts(self, query):
+        user_id = query.from_user.id
+        user_ctx = self.user_context.get(user_id, {})
+        group_debts = user_ctx.get('group_debts', [])
+        processing_msg_id = user_ctx.get('processing_msg_id')
+        
+        if not group_debts:
+            await query.answer("❌ Ma'lumot topilmadi.")
+            return
+        
+        for debt_info in group_debts:
+            # Create individual debt for each
+            processing_msg = await query.get_bot().send_message(chat_id=query.message.chat_id, text="⏳ Qarz yaratilyapti...")
+            await self.create_debt_confirmation(query, None, debt_info, processing_msg)  # Note: context is None here, adjust if needed
+        
+        del self.user_context[user_id]
+        await query.edit_message_text("✅ Guruh qarzlari yaratildi!")
+    
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         data = query.data
+        
+        if data.startswith('split_'):
+            split_type = data.replace('split_', '')
+            await self.handle_group_split(query, split_type)
+            return
+        
+        if data == 'confirm_group':
+            await self.confirm_group_debts(query)
+            return
+        
+        if data == 'cancel_group':
+            del self.user_context[query.from_user.id]
+            await query.edit_message_text("❌ Bekor qilindi.")
+            return
         
         if data.startswith('confirm_'):
             await self.confirm_debt_callback(query, data)
@@ -722,6 +832,19 @@ class DebtBot:
                 del self.user_context[user_id]
                 return
             
+            if debt_info.get('is_group'):
+                self.user_context[user_id] = {
+                    'action': 'split_type',
+                    'debt_info': debt_info,
+                    'processing_msg_id': processing_msg.message_id
+                }
+                keyboard = [
+                    [InlineKeyboardButton("🟰 Teng bo'lish", callback_data="split_equal")],
+                    [InlineKeyboardButton("📊 Turli bo'lish", callback_data="split_unequal")]
+                ]
+                await processing_msg.edit_text("❓ Umumiy xarajatlarni qanday bo'lish kerak?", reply_markup=InlineKeyboardMarkup(keyboard))
+                return
+            
             missing = self.check_missing_info(debt_info)
             if missing:
                 await self.request_missing_info(update, context, debt_info, missing, processing_msg)
@@ -729,6 +852,54 @@ class DebtBot:
                 await self.create_debt_confirmation(update, context, debt_info, processing_msg)
             
             del self.user_context[user_id]
+        elif user_ctx.get('action') == 'unequal_split':
+            try:
+                amount = float(text.replace(',', '').replace(' ', ''))
+            except ValueError:
+                await update.message.reply_text("❌ Raqam kiriting.")
+                return
+            
+            index = user_ctx['current_debtor_index']
+            user_ctx['amounts'][index] = amount
+            
+            debtors = user_ctx['debtors']
+            if index + 1 < len(debtors):
+                user_ctx['current_debtor_index'] += 1
+                await update.message.reply_text(f"❓ {debtors[index + 1]} uchun qancha? (so'm)")
+            else:
+                total_assigned = sum(user_ctx['amounts'])
+                if total_assigned != user_ctx['total_amount']:
+                    await update.message.reply_text(f"❌ Jami {total_assigned:,.0f} so'm, lekin kerakli {user_ctx['total_amount']:,} so'm. Qaytadan.")
+                    return
+                
+                group_debts = []
+                payer_name = user_ctx['payer_name']
+                reason = user_ctx['reason']
+                for i, debtor in enumerate(debtors):
+                    group_debts.append({
+                        'direction': 'owe_me',
+                        'creditor_name': payer_name,
+                        'debtor_name': debtor,
+                        'amount': user_ctx['amounts'][i],
+                        'currency': 'so\'m',
+                        'reason': reason
+                    })
+                
+                self.user_context[user_id] = {
+                    'action': 'confirm_group',
+                    'group_debts': group_debts,
+                    'processing_msg_id': user_ctx['processing_msg_id']
+                }
+                
+                confirmation_text = "✅ Turli bo'lish:\n"
+                for i, debtor in enumerate(debtors):
+                    confirmation_text += f"{debtor}: {user_ctx['amounts'][i]:,.0f} so'm\n"
+                confirmation_text += "\nTasdiqlaysizmi?"
+                keyboard = [
+                    [InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm_group")],
+                    [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_group")]
+                ]
+                await update.message.reply_text(confirmation_text, reply_markup=InlineKeyboardMarkup(keyboard))
         # Handle adding username for pending debt
         if user_ctx.get('action') == 'add_username':
             debt_id = user_ctx['debt_id']
