@@ -78,6 +78,16 @@ class DebtBot:
             
             debt_info = await self.parse_debt_info(transcribed_text, user)
             
+            if debt_info.get('clarification_needed'):
+                # Store context for clarification response
+                self.user_context[user.id] = {
+                    'action': 'clarification',
+                    'original_text': transcribed_text,
+                    'processing_msg_id': processing_msg.message_id
+                }
+                await processing_msg.edit_text(debt_info['clarification_question'])
+                return
+            
             if debt_info.get('error'):
                 await processing_msg.edit_text(f"❌ {debt_info['error']}\n\nIltimos, qaytadan urinib ko'ring.")
                 return
@@ -98,16 +108,23 @@ class DebtBot:
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": """Sen qarz tahlilchisan. JSON qaytaring:
-                    - amount: raqam (50 ming = 50000)
-                    - currency: "so'm"
-                    - creditor_name: kim qarz berdi
-                    - debtor_name: kim qarz oldi
-                    - reason: sabab
-                    - direction: "i_owe" yoki "owe_me"
+                    {"role": "system", "content": """Sen qarz tahlilchisan. Matnni tahlil qiling va quyidagi JSONni qaytaring. Matn o'zbek, rus va ingliz tillarida bo'lishi mumkin, aralash bo'lishi mumkin. Har qanday matndan ma'lumot chiqarib oling, hatto tartibsiz bo'lsa ham.
                     
-                    "menga qarz berdi" = owe_me
-                    "men qarz berdim" = i_owe"""},
+                    Agar ma'lumot to'liq bo'lmasa yoki noaniq bo'lsa, "clarification_needed": true, va "clarification_question": "Savol matni" (masalan, "Kim kimga qarz berdi?") qaytaring. Faqat aniq bo'lmagan qismlar uchun savol bering.
+                    
+                    Aks holda, quyidagilarni qaytaring:
+                    - amount: raqam (50 ming = 50000, 160 ming = 160000, faqat raqam)
+                    - currency: "so'm" yoki aniqlanmagan bo'lsa "so'm" (standart)
+                    - creditor_name: kim qarz berdi (ism yoki @username)
+                    - debtor_name: kim qarz oldi (ism yoki @username)
+                    - reason: sabab (masalan, "obedga", "etik olish")
+                    - direction: "i_owe" (men qarz berdim) yoki "owe_me" (menga qarz berdi)
+                    
+                    Misollar:
+                    - "Alisher menga 50 ming so'm qarz berdi lunch uchun" -> direction: "owe_me", creditor_name: "Alisher", amount: 50000, reason: "lunch uchun"
+                    - "Bugun obedga to'landi общий 160 ming, Murod, Ibrohim и ман" -> Agar noaniq bo'lsa, clarification_needed: true, clarification_question: "Kim kimga qancha qarz berdi?"
+                    
+                    Irrelevant ma'lumotni filtrlang, faqat qarz haqidagi qismini oling. Agar tushunmasangiz, clarification_needed qaytaring."""},
                     {"role": "user", "content": text}
                 ],
                 temperature=0.3
@@ -688,6 +705,30 @@ class DebtBot:
                 
             except ValueError:
                 await update.message.reply_text("❌ Iltimos, to'g'ri raqam kiriting.")
+        elif user_ctx.get('action') == 'clarification':
+            # Re-parse with additional clarification
+            original_text = user_ctx['original_text']
+            combined_text = f"{original_text} {text}"  # Append clarification to original
+            debt_info = await self.parse_debt_info(combined_text, update.effective_user)
+            
+            processing_msg = await context.bot.get_message(chat_id=update.message.chat_id, message_id=user_ctx['processing_msg_id'])
+            
+            if debt_info.get('clarification_needed'):
+                await update.message.reply_text(debt_info['clarification_question'])
+                return  # Ask again if still unclear
+            
+            if debt_info.get('error'):
+                await processing_msg.edit_text(f"❌ {debt_info['error']}\n\nIltimos, qaytadan urinib ko'ring.")
+                del self.user_context[user_id]
+                return
+            
+            missing = self.check_missing_info(debt_info)
+            if missing:
+                await self.request_missing_info(update, context, debt_info, missing, processing_msg)
+            else:
+                await self.create_debt_confirmation(update, context, debt_info, processing_msg)
+            
+            del self.user_context[user_id]
         # Handle adding username for pending debt
         if user_ctx.get('action') == 'add_username':
             debt_id = user_ctx['debt_id']
