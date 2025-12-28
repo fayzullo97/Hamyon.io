@@ -69,7 +69,7 @@ class DebtBot:
             # with open(voice_path, 'rb') as audio_file:
             #     transcript = openai.audio.transcriptions.create(model="whisper-1", file=audio_file, language="uz")
             with open(voice_path, "rb") as audio_file:
-                transcript = client.audio.transcriptions.create(model="whisper-1",file=audio_file,language="uz")
+                transcript = client.audio.transcriptions.create(model="whisper-1",file=audio_file)
             transcribed_text = transcript.text
             if os.path.exists(voice_path):
                 os.remove(voice_path)
