@@ -36,8 +36,8 @@ class Database:
             CREATE TABLE IF NOT EXISTS debts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 creator_id INTEGER NOT NULL,
-                creditor_id INTEGER NOT NULL,
-                debtor_id INTEGER NOT NULL,
+                creditor_id INTEGER,
+                debtor_id INTEGER,
                 amount REAL NOT NULL,
                 currency TEXT DEFAULT 'so''m',
                 reason TEXT,
@@ -45,6 +45,8 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 confirmed_by_creditor BOOLEAN DEFAULT FALSE,
                 confirmed_by_debtor BOOLEAN DEFAULT FALSE,
+                creditor_username TEXT,
+                debtor_username TEXT,
                 FOREIGN KEY (creator_id) REFERENCES users(user_id),
                 FOREIGN KEY (creditor_id) REFERENCES users(user_id),
                 FOREIGN KEY (debtor_id) REFERENCES users(user_id)
@@ -149,15 +151,37 @@ class Database:
         conn.close()
         return dict(user) if user else None
     
-    def create_debt(self, creator_id, creditor_id, debtor_id, amount, currency, reason):
-        """Create a new debt record"""
+    def link_pending_debts(self, username, user_id):
+        """Link pending debts to newly registered user based on username"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Link as creditor
+        cursor.execute('''
+            UPDATE debts
+            SET creditor_id = ?, creditor_username = NULL
+            WHERE creditor_username = ? AND creditor_id IS NULL
+        ''', (user_id, username))
+        
+        # Link as debtor
+        cursor.execute('''
+            UPDATE debts
+            SET debtor_id = ?, debtor_username = NULL
+            WHERE debtor_username = ? AND debtor_id IS NULL
+        ''', (user_id, username))
+        
+        conn.commit()
+        conn.close()
+    
+    def create_debt(self, creator_id, creditor_id, debtor_id, amount, currency, reason, creditor_username=None, debtor_username=None):
+        """Create a new debt record, allowing null IDs with usernames"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
-            INSERT INTO debts (creator_id, creditor_id, debtor_id, amount, currency, reason, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending')
-        ''', (creator_id, creditor_id, debtor_id, amount, currency, reason))
+            INSERT INTO debts (creator_id, creditor_id, debtor_id, amount, currency, reason, status, creditor_username, debtor_username)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        ''', (creator_id, creditor_id, debtor_id, amount, currency, reason, creditor_username, debtor_username))
         
         debt_id = cursor.lastrowid
         conn.commit()
@@ -196,18 +220,18 @@ class Database:
         return True
     
     def get_debt(self, debt_id):
-        """Get debt by ID"""
+        """Get debt by ID, with fallback to usernames"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
             SELECT d.*, 
-                   c.first_name as creditor_name, c.username as creditor_username,
-                   b.first_name as debtor_name, b.username as debtor_username,
+                   c.first_name as creditor_first_name, c.username as creditor_db_username,
+                   b.first_name as debtor_first_name, b.username as debtor_db_username,
                    cr.first_name as creator_name
             FROM debts d
-            JOIN users c ON d.creditor_id = c.user_id
-            JOIN users b ON d.debtor_id = b.user_id
+            LEFT JOIN users c ON d.creditor_id = c.user_id
+            LEFT JOIN users b ON d.debtor_id = b.user_id
             JOIN users cr ON d.creator_id = cr.user_id
             WHERE d.id = ?
         ''', (debt_id,))
@@ -215,20 +239,27 @@ class Database:
         debt = cursor.fetchone()
         conn.close()
         
-        return dict(debt) if debt else None
+        if debt:
+            debt_dict = dict(debt)
+            debt_dict['creditor_name'] = debt_dict['creditor_first_name'] or debt_dict['creditor_username']
+            debt_dict['debtor_name'] = debt_dict['debtor_first_name'] or debt_dict['debtor_username']
+            debt_dict['creditor_username'] = debt_dict['creditor_db_username'] or debt_dict['creditor_username']
+            debt_dict['debtor_username'] = debt_dict['debtor_db_username'] or debt_dict['debtor_username']
+            return debt_dict
+        return None
     
     def get_user_debts(self, user_id):
-        """Get all debts for a user"""
+        """Get all debts for a user, with fallback to usernames"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
             SELECT d.*, 
-                   c.first_name as creditor_name, c.username as creditor_username,
-                   b.first_name as debtor_name, b.username as debtor_username
+                   c.first_name as creditor_first_name, c.username as creditor_db_username,
+                   b.first_name as debtor_first_name, b.username as debtor_db_username
             FROM debts d
-            JOIN users c ON d.creditor_id = c.user_id
-            JOIN users b ON d.debtor_id = b.user_id
+            LEFT JOIN users c ON d.creditor_id = c.user_id
+            LEFT JOIN users b ON d.debtor_id = b.user_id
             WHERE (d.creditor_id = ? OR d.debtor_id = ?)
             AND d.status IN ('active', 'pending')
             ORDER BY d.created_at DESC
@@ -237,18 +268,24 @@ class Database:
         debts = cursor.fetchall()
         conn.close()
         
-        return [dict(debt) for debt in debts]
+        debt_list = []
+        for debt in debts:
+            debt_dict = dict(debt)
+            debt_dict['creditor_name'] = debt_dict['creditor_first_name'] or debt_dict['creditor_username']
+            debt_dict['debtor_name'] = debt_dict['debtor_first_name'] or debt_dict['debtor_username']
+            debt_list.append(debt_dict)
+        return debt_list
     
     def get_debts_i_owe(self, user_id):
-        """Get debts where user is the debtor"""
+        """Get debts where user is the debtor, with fallback"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
             SELECT d.*, 
-                   c.first_name as creditor_name, c.username as creditor_username
+                   c.first_name as creditor_first_name, c.username as creditor_db_username
             FROM debts d
-            JOIN users c ON d.creditor_id = c.user_id
+            LEFT JOIN users c ON d.creditor_id = c.user_id
             WHERE d.debtor_id = ? AND d.status = 'active'
             ORDER BY d.created_at DESC
         ''', (user_id,))
@@ -256,18 +293,23 @@ class Database:
         debts = cursor.fetchall()
         conn.close()
         
-        return [dict(debt) for debt in debts]
+        debt_list = []
+        for debt in debts:
+            debt_dict = dict(debt)
+            debt_dict['creditor_name'] = debt_dict['creditor_first_name'] or debt_dict['creditor_username']
+            debt_list.append(debt_dict)
+        return debt_list
     
     def get_debts_owed_to_me(self, user_id):
-        """Get debts where user is the creditor"""
+        """Get debts where user is the creditor, with fallback"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
             SELECT d.*, 
-                   b.first_name as debtor_name, b.username as debtor_username
+                   b.first_name as debtor_first_name, b.username as debtor_db_username
             FROM debts d
-            JOIN users b ON d.debtor_id = b.user_id
+            LEFT JOIN users b ON d.debtor_id = b.user_id
             WHERE d.creditor_id = ? AND d.status = 'active'
             ORDER BY d.created_at DESC
         ''', (user_id,))
@@ -275,7 +317,12 @@ class Database:
         debts = cursor.fetchall()
         conn.close()
         
-        return [dict(debt) for debt in debts]
+        debt_list = []
+        for debt in debts:
+            debt_dict = dict(debt)
+            debt_dict['debtor_name'] = debt_dict['debtor_first_name'] or debt_dict['debtor_username']
+            debt_list.append(debt_dict)
+        return debt_list
     
     def add_payment(self, debt_id, payer_id, amount):
         """Add a partial payment to a debt"""
