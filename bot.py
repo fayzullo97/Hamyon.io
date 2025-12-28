@@ -992,7 +992,7 @@ class DebtBot:
                 confirmation_text = "✅ *Yakuniy tasdiqlash:*\n\n"
                 total = 0
                 for debt in group_debts:
-                    confirmation_text += f"• {debt['debtor_name']} ({debt.get('debtor_username', 'username yo\'q')}): {debt['amount']:,.0f} so'm\n"
+                    confirmation_text += f"{debt['debtor_name']} ({debt.get('debtor_username', "username yo`q")}): {debt['amount']:,.0f} so'm\n"
                     total += debt['amount']
                 
                 confirmation_text += f"\n💰 Jami: {total:,.0f} so'm\n"
