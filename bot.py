@@ -111,7 +111,15 @@ class DebtBot:
                 temperature=0.3
             )
             
-            result = json.loads(response.choices[0].message.content)
+            content = response.choices[0].message.content.strip()
+            
+            # Remove markdown code blocks if present
+            if content.startswith('```'):
+                content = content.split('```')[1]
+                if content.startswith('json'):
+                    content = content[4:].strip()
+            
+            result = json.loads(content)
             result['original_text'] = text
             return result
         except Exception as e:
