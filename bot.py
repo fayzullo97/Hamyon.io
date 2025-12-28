@@ -93,7 +93,7 @@ class DebtBot:
     
     async def parse_debt_info(self, text: str, user):
         try:
-            response = openai.chat.completions.create(
+            response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": """Sen qarz tahlilchisan. JSON qaytaring:
@@ -116,7 +116,8 @@ class DebtBot:
             return result
         except Exception as e:
             logger.error(f"Parse error: {e}")
-            return {'error': 'Tushunmadim. Aniqroq aytib bering.'}
+            logger.error(f"Full error details: {type(e).__name__}: {str(e)}")
+            return {'error': f'Tushunmadim. Xato: {str(e)[:50]}'}
     
     def check_missing_info(self, debt_info):
         missing = []
