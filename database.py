@@ -89,7 +89,32 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         ''')
+        # User circles/categories table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_circles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                circle_name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                UNIQUE(user_id, circle_name)
+            )
+        ''')
         
+        # Circle members table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS circle_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                circle_id INTEGER NOT NULL,
+                member_name TEXT NOT NULL,
+                member_user_id INTEGER,
+                member_username TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (circle_id) REFERENCES user_circles(id),
+                FOREIGN KEY (member_user_id) REFERENCES users(user_id)
+            )
+        ''')
+
         # Notifications table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS notifications (
@@ -320,7 +345,12 @@ class Database:
         debt_list = []
         for debt in debts:
             debt_dict = dict(debt)
-            debt_dict['debtor_name'] = debt_dict['debtor_first_name'] or debt_dict['debtor_username']
+            # Fallback to username if no first_name
+            debt_dict['debtor_name'] = (
+                debt_dict['debtor_first_name'] or 
+                debt_dict.get('debtor_username', 'Noma\'lum') or 
+                'Noma\'lum'
+            )
             debt_list.append(debt_dict)
         return debt_list
     
@@ -443,3 +473,88 @@ class Database:
         cursor.execute('UPDATE notifications SET read = TRUE WHERE id = ?', (notification_id,))
         conn.commit()
         conn.close()
+    
+    def create_circle(self, user_id, circle_name):
+        """Create a user circle/category"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT OR IGNORE INTO user_circles (user_id, circle_name)
+            VALUES (?, ?)
+        ''', (user_id, circle_name))
+        
+        circle_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return circle_id
+    
+    def add_member_to_circle(self, circle_id, member_name, member_user_id=None, member_username=None):
+        """Add member to circle"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO circle_members (circle_id, member_name, member_user_id, member_username)
+            VALUES (?, ?, ?, ?)
+        ''', (circle_id, member_name, member_user_id, member_username))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_user_circles(self, user_id):
+        """Get all circles for a user"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT * FROM user_circles
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+        ''', (user_id,))
+        
+        circles = cursor.fetchall()
+        conn.close()
+        return [dict(circle) for circle in circles]
+    
+    def get_circle_members(self, circle_id):
+        """Get all members of a circle"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT cm.*, u.username as db_username
+            FROM circle_members cm
+            LEFT JOIN users u ON cm.member_user_id = u.user_id
+            WHERE cm.circle_id = ?
+        ''', (circle_id,))
+        
+        members = cursor.fetchall()
+        conn.close()
+        return [dict(member) for member in members]
+    
+    def find_circle_by_members(self, user_id, member_names):
+        """Find circle that matches these members"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Get all circles for user
+        cursor.execute('SELECT id FROM user_circles WHERE user_id = ?', (user_id,))
+        circles = cursor.fetchall()
+        
+        for circle in circles:
+            circle_id = circle['id']
+            cursor.execute('''
+                SELECT member_name FROM circle_members WHERE circle_id = ?
+            ''', (circle_id,))
+            
+            circle_members = [m['member_name'] for m in cursor.fetchall()]
+            
+            # Check if members match (at least 50% overlap)
+            overlap = len(set(member_names) & set(circle_members))
+            if overlap >= len(member_names) * 0.5:
+                conn.close()
+                return circle_id
+        
+        conn.close()
+        return None
