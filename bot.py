@@ -972,9 +972,9 @@ class DebtBot:
             message += f"{emoji} *#{d['id']}* "
             
             if d['debtor_id'] == user_id:
-                message += f"{d["creditor_name"] or d.get("creditor_username", "Noma\'lum")}ga qarzdor\n"
+                message += f"{d["creditor_name"] or d.get("creditor_username", "Noma`lum")}ga qarzdor\n"
             else:
-                message += f"{d["debtor_name"] or d.get("debtor_username", "Noma\'lum")}dan qarz\n"
+                message += f"{d["debtor_name"] or d.get("debtor_username", "Noma`lum")}dan qarz\n"
             
             message += f"   💰 {d['amount']:,} so'm\n   📝 {d['reason']}\n"
             message += f"   📅 {d['created_at'][:10]}\n\n"
