@@ -1285,76 +1285,88 @@ class DebtBot:
                 await self.create_debt_confirmation(update, context, debt_info, processing_msg)
             
             del self.user_context[user_id]
+        
         elif user_ctx.get('action') == 'unequal_split':
-            # Clean and parse amount - handle all formats
-            amount_str = text.lower().strip()
-            
-            # Remove dots, commas, spaces
-            amount_str = amount_str.replace('.', '').replace(',', '').replace(' ', '')
-            
             try:
-                # Handle "ming" or "min" (thousand)
-                if 'ming' in amount_str or 'min' in amount_str:
-                    amount_str = amount_str.replace('ming', '').replace('min', '')
-                    amount = float(re.sub(r'[^\d]', '', amount_str)) * 1000
-                else:
-                    amount = float(re.sub(r'[^\d]', '', amount_str))
+                amount = float(text.replace(',', '').replace(' ', ''))
+                if amount < 0:
+                    raise ValueError
             except ValueError:
-                await update.message.reply_text("❌ Raqam kiriting. Masalan: 60000 yoki 60 ming")
+                await update.message.reply_text("❌ Iltimos, musbat raqam kiriting (masalan: 60000)")
                 return
             
             index = user_ctx['current_debtor_index']
             user_ctx['amounts'][index] = amount
             
             debtors = user_ctx['debtors']
+            
+            # Move to next debtor
             if index + 1 < len(debtors):
-                user_ctx['current_debtor_index'] = index + 1
-                await update.message.reply_text(f"❓ {debtors[index + 1]} uchun qancha? (so'm)")
-            else:
-                # All amounts collected, check total
-                total_assigned = sum(user_ctx['amounts'])
-                if abs(total_assigned - user_ctx['total_amount']) > 1:  # Allow 1 som difference for rounding
-                    # Restart the process
-                    user_ctx['current_debtor_index'] = 0
-                    user_ctx['amounts'] = [0] * len(debtors)
-                    
-                    await update.message.reply_text(
-                        f"❌ Jami {total_assigned:,.0f} so'm, lekin kerakli {user_ctx['total_amount']:,.0f} so'm.\n\n"
-                        f"Qaytadan boshlaylik:\n\n"
-                        f"❓ {debtors[0]} uchun qancha? (so'm)"
-                    )
-                    return
-                
-                # Create group debts
-                group_debts = []
-                payer_name = user_ctx['payer_name']
-                reason = user_ctx['reason']
-                for i, debtor in enumerate(debtors):
+                user_ctx['current_debtor_index'] += 1
+                next_debtor = debtors[index + 1]
+                await update.message.reply_text(f"❓ {next_debtor} uchun qancha? (so'm)")
+                return
+            
+            # All amounts collected — calculate remaining for you (the payer)
+            assigned_total = sum(user_ctx['amounts'])
+            total_amount = user_ctx['total_amount']
+            my_share = total_amount - assigned_total
+            
+            if my_share < 0:
+                # User assigned more than total → restart
+                user_ctx['current_debtor_index'] = 0
+                user_ctx['amounts'] = [0] * len(debtors)
+                await update.message.reply_text(
+                    f"❌ Siz jami {assigned_total:,.0f} so'm belgiladingiz, lekin umumiy xarajat {total_amount:,.0f} so'm edi.\n"
+                    f"Ortiqcha summa kiritildi. Qaytadan boshlaymiz:\n\n"
+                    f"❓ {debtors[0]} uchun qancha? (so'm)"
+                )
+                return
+            
+            # Everything is correct — prepare group debts
+            group_debts = []
+            payer_name = user_ctx['payer_name']
+            reason = user_ctx['reason']
+            currency = user_ctx['currency']
+            
+            for i, debtor in enumerate(debtors):
+                if user_ctx['amounts'][i] > 0:  # Only create debt if amount > 0
                     group_debts.append({
                         'direction': 'owe_me',
                         'creditor_name': payer_name,
                         'debtor_name': debtor,
                         'amount': user_ctx['amounts'][i],
-                        'currency': 'so\'m',
+                        'currency': currency,
                         'reason': reason
                     })
-                
-                self.user_context[user_id] = {
-                    'action': 'confirm_group',
-                    'group_debts': group_debts,
-                    'processing_msg_id': user_ctx['processing_msg_id']
-                }
-                
-                confirmation_text = "✅ Turli bo'lish:\n\n"
-                for i, debtor in enumerate(debtors):
+            
+            # Save for final confirmation
+            self.user_context[user_id] = {
+                'action': 'confirm_group',
+                'group_debts': group_debts,
+                'my_share': my_share,
+                'total_to_receive': assigned_total,
+                'processing_msg_id': user_ctx['processing_msg_id']
+            }
+            
+            confirmation_text = "✅ *Turli bo'lish natijasi:*\n\n"
+            confirmation_text += f"💰 Jami to'langan: {total_amount:,.0f} so'm\n"
+            confirmation_text += f"📌 Sizing ulushingiz: {my_share:,.0f} so'm\n"
+            confirmation_text += f"🔄 Qolgan {len([a for a in user_ctx['amounts'] if a > 0])} kishi sizga qaytarishi kerak: {assigned_total:,.0f} so'm\n\n"
+            
+            confirmation_text += "*Batafsil:*\n"
+            for i, debtor in enumerate(debtors):
+                if user_ctx['amounts'][i] > 0:
                     confirmation_text += f"• {debtor}: {user_ctx['amounts'][i]:,.0f} so'm\n"
-                confirmation_text += f"\n💰 Jami: {total_assigned:,.0f} so'm\n\nTasdiqlaysizmi?"
-                
-                keyboard = [
-                    [InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm_group")],
-                    [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_group")]
-                ]
-                await update.message.reply_text(confirmation_text, reply_markup=InlineKeyboardMarkup(keyboard))
+            
+            confirmation_text += "\nBu to'g'rimi?"
+            
+            keyboard = [
+                [InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm_group")],
+                [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_group")]
+            ]
+            
+            await update.message.reply_text(confirmation_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
         if user_ctx.get('action') == 'add_username':
             debt_id = user_ctx['debt_id']
