@@ -370,77 +370,60 @@ class DebtBot:
                 'processing_msg_id': processing_msg_id
             }
             await query.edit_message_text(f"❓ {debtors[0]} qancha qaytarishi kerak? (so'm)")
+    
     async def confirm_group_debts(self, query):
-        """Collect usernames before creating group debts - auto-detect from circles"""
+        
         user_id = query.from_user.id
         user_ctx = self.user_context.get(user_id, {})
         group_debts = user_ctx.get('group_debts', [])
-        processing_msg_id = user_ctx.get('processing_msg_id')
+        my_share = user_ctx.get('my_share', 0)
         
         if not group_debts:
-            await query.answer("❌ Ma'lumot topilmadi.")
+            await query.edit_message_text("❌ Ma'lumot topilmadi.")
             return
         
-        # Get unique debtors
-        debtors = list(set([debt['debtor_name'] for debt in group_debts]))
-        
-        # Try to auto-detect usernames from circles
-        debtor_usernames = {}
-        unknown_debtors = []
-        
-        for debtor in debtors:
-            # Search in all circles
-            circles = self.db.get_user_circles(user_id)
-            found = False
+        created_count = 0
+        for debt_info in group_debts:
+            # Create debt
+            created_debt_id = self.db.create_debt(
+                creator_id=user_id,
+                creditor_id=user_id,  # You are creditor
+                debtor_id=None,  # Will be filled later if user registers
+                amount=debt_info['amount'],
+                currency=debt_info['currency'],
+                reason=debt_info['reason'],
+                creditor_username=None,
+                debtor_username=None
+            )
             
-            for circle in circles:
-                members = self.db.get_circle_members(circle['id'])
-                for member in members:
-                    if member['member_name'].lower() == debtor.lower():
-                        # Found in circle!
-                        debtor_usernames[debtor] = {
-                            'user_id': member['member_user_id'],
-                            'username': member['member_username'] or member.get('db_username'),
-                            'first_name': member['member_name']
-                        }
-                        found = True
-                        break
-                if found:
-                    break
+            # AUTO-CONFIRM from your side (as creditor)
+            self.db.confirm_debt(created_debt_id, user_id)
             
-            if not found:
-                unknown_debtors.append(debtor)
-        
-        # If all debtors are known, skip username collection
-        if not unknown_debtors:
-            # Update group debts with known info
-            for debt in group_debts:
-                debtor_name = debt['debtor_name']
-                if debtor_name in debtor_usernames:
-                    user_info = debtor_usernames[debtor_name]
-                    debt['debtor_id'] = user_info['user_id']
-                    debt['debtor_username'] = user_info['username']
+            # Try to find and link debtor if already in DB
+            debtor = self.db.find_user_by_username(debt_info['debtor_name'])
+            if debtor:
+                self.db.link_debt_to_user(created_debt_id, 'debtor', debtor['user_id'])
+                # Optionally notify them
+                try:
+                    await query.get_bot().send_message(
+                        debtor['user_id'],
+                        f"🔔 Yangi qarz:\n{debt_info['debtor_name']} sizga {debt_info['amount']:,} so'm qaytarishi kerak.\nSabab: {debt_info['reason']}\n\nTasdiqlang yoki rad eting.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"accept_debt_{created_debt_id}"),
+                            InlineKeyboardButton("❌ Rad etish", callback_data=f"dispute_debt_{created_debt_id}")
+                        ]])
+                    )
+                except:
+                    pass
             
-            # Show final confirmation
-            await self.show_final_group_confirmation(query, group_debts)
-            return
+            created_count += 1
         
-        # Need to collect unknown debtors
-        self.user_context[user_id] = {
-            'action': 'collect_usernames',
-            'group_debts': group_debts,
-            'debtors': unknown_debtors,
-            'debtor_usernames': debtor_usernames,  # Keep known ones
-            'current_debtor_index': 0,
-            'processing_msg_id': processing_msg_id
-        }
+        result_text = f"✅ {created_count} ta qarz muvaffaqiyatli yaratildi!\n\n"
+        result_text += f"📌 Sizing ulushingiz: {my_share:,.0f} so'm\n"
+        result_text += f"🔄 Qolganlar sizga jami {sum(d['amount'] for d in group_debts):,.0f} so'm qaytarishi kerak."
         
-        await query.edit_message_text(
-            f"👤 {unknown_debtors[0]} uchun telegram username kiriting:\n\n"
-            f"Masalan: @username\n\n"
-            f"Yoki kontakt ulashing.\n\n"
-            f"ℹ️ Qolgan {len(unknown_debtors)} kishi uchun so'rayapman."
-        )
+        await query.edit_message_text(result_text)
+        del self.user_context[user_id]
     
     async def final_confirm_group_debts(self, query):
         """Create individual debts after final confirmation"""
