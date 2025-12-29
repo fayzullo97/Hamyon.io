@@ -379,20 +379,34 @@ class DebtBot:
             await query.edit_message_text(confirmation_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
         elif split_type == 'unequal':
+            # Calculate how much others should pay back (excluding payer's own share)
+            num_people = len(participants)
+            payer_share = total_amount / num_people
+            amount_to_split = total_amount - payer_share  # Others pay back this amount
+            
             self.user_context[user_id] = {
                 'action': 'unequal_split',
                 'debtors': debtors,
                 'current_debtor_index': 0,
-                'amounts': [0] * num_debtors,
-                'total_amount': total_amount,
+                'amounts': [0] * len(debtors),
+                'total_amount': amount_to_split,  # Changed: split only what others owe
+                'original_total': total_amount,
+                'payer_share': payer_share,
                 'payer_name': payer_name,
                 'reason': reason,
                 'processing_msg_id': processing_msg_id
             }
-            await query.edit_message_text(f"❓ {debtors[0]} uchun qancha? (so'm)")
-
+            
+            await query.edit_message_text(
+                f"📊 *Turli bo'lish:*\n\n"
+                f"💰 Jami to'langan: {total_amount:,.0f} so'm\n"
+                f"👥 Kishilar: {num_people} kishi\n"
+                f"📌 Sizning ulushingiz: {payer_share:,.0f} so'm\n\n"
+                f"Qolgan {len(debtors)} kishi sizga qaytarishi kerak: {amount_to_split:,.0f} so'm\n\n"
+                f"❓ {debtors[0]} qancha qaytarishi kerak? (so'm)"
+            )
     async def confirm_group_debts(self, query):
-        """Collect usernames before creating group debts"""
+        """Collect usernames before creating group debts - auto-detect from circles"""
         user_id = query.from_user.id
         user_ctx = self.user_context.get(user_id, {})
         group_debts = user_ctx.get('group_debts', [])
@@ -402,31 +416,74 @@ class DebtBot:
             await query.answer("❌ Ma'lumot topilmadi.")
             return
         
-        # Get unique debtors (excluding payer)
+        # Get unique debtors
         debtors = list(set([debt['debtor_name'] for debt in group_debts]))
         
-        # Update context for username collection
+        # Try to auto-detect usernames from circles
+        debtor_usernames = {}
+        unknown_debtors = []
+        
+        for debtor in debtors:
+            # Search in all circles
+            circles = self.db.get_user_circles(user_id)
+            found = False
+            
+            for circle in circles:
+                members = self.db.get_circle_members(circle['id'])
+                for member in members:
+                    if member['member_name'].lower() == debtor.lower():
+                        # Found in circle!
+                        debtor_usernames[debtor] = {
+                            'user_id': member['member_user_id'],
+                            'username': member['member_username'] or member.get('db_username'),
+                            'first_name': member['member_name']
+                        }
+                        found = True
+                        break
+                if found:
+                    break
+            
+            if not found:
+                unknown_debtors.append(debtor)
+        
+        # If all debtors are known, skip username collection
+        if not unknown_debtors:
+            # Update group debts with known info
+            for debt in group_debts:
+                debtor_name = debt['debtor_name']
+                if debtor_name in debtor_usernames:
+                    user_info = debtor_usernames[debtor_name]
+                    debt['debtor_id'] = user_info['user_id']
+                    debt['debtor_username'] = user_info['username']
+            
+            # Show final confirmation
+            await self.show_final_group_confirmation(query, group_debts)
+            return
+        
+        # Need to collect unknown debtors
         self.user_context[user_id] = {
             'action': 'collect_usernames',
             'group_debts': group_debts,
-            'debtors': debtors,
-            'debtor_usernames': {},
+            'debtors': unknown_debtors,
+            'debtor_usernames': debtor_usernames,  # Keep known ones
             'current_debtor_index': 0,
             'processing_msg_id': processing_msg_id
         }
         
-        # Ask for first debtor's username
         await query.edit_message_text(
-            f"👤 {debtors[0]} uchun telegram username kiriting:\n\n"
+            f"👤 {unknown_debtors[0]} uchun telegram username kiriting:\n\n"
             f"Masalan: @username\n\n"
-            f"Yoki kontakt ulashing."
+            f"Yoki kontakt ulashing.\n\n"
+            f"ℹ️ Qolgan {len(unknown_debtors)} kishi uchun so'rayapman."
         )
+    
     async def final_confirm_group_debts(self, query):
         """Create individual debts after final confirmation"""
         user_id = query.from_user.id
         user_ctx = self.user_context.get(user_id, {})
         group_debts = user_ctx.get('group_debts', [])
-        
+        confirmation_text = "✅ *Yakuniy tasdiqlash:*\n\n"
+        total = 0
         if not group_debts:
             await query.answer("❌ Ma'lumot topilmadi.")
             return
@@ -479,9 +536,34 @@ class DebtBot:
                 
             except Exception as e:
                 logger.error(f"Error creating group debt: {e}")
+        for debt in group_debts:
+            username_display = debt.get('debtor_username', 'username yo\'q')
+            if debt.get('debtor_id'):
+                username_display = f"✅ {username_display}"
+            else:
+                username_display = f"⏳ {username_display}"
+            
+            confirmation_text += f"• {debt['debtor_name']} ({username_display}): {debt['amount']:,.0f} so'm\n"
+            total += debt['amount']
+        confirmation_text += f"\n💰 Jami: {total:,.0f} so'm\n"
+        confirmation_text += f"📝 Sabab: {group_debts[0]['reason']}\n\n"
+        confirmation_text += "Tasdiqlaysizmi?"
         
+        keyboard = [
+            [InlineKeyboardButton("✅ Tasdiqlash", callback_data="final_confirm_group")],
+            [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_group")]
+        ]
         del self.user_context[user_id]
+        self.user_context[query.from_user.id] = {
+            'action': 'final_confirm_group',
+            'group_debts': group_debts
+        }
         
+        await query.edit_message_text(
+            confirmation_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         await query.edit_message_text(
             f"✅ *Guruh qarzlari yaratildi!*\n\n"
             f"📊 Yaratilgan qarzlar: {created_count}\n"
@@ -535,9 +617,16 @@ class DebtBot:
             return
         if data.startswith('history_'):
             page = int(data.replace('history_', ''))
-            await query.message.delete()
-            await self.show_history(query, context, page=page)
+            # Pass the query as update
+            class FakeUpdate:
+                def __init__(self, callback_query):
+                    self.callback_query = callback_query
+                    self.effective_user = callback_query.from_user
+            
+            fake_update = FakeUpdate(query)
+            await self.show_history(fake_update, context, page=page)
             return
+        
         if data == 'confirm_group':
             await self.confirm_group_debts(query)
             return
@@ -827,9 +916,15 @@ class DebtBot:
                      f"📊 Balans: {(total_owed - total_owe):+,} so'm")
         
         await update.message.reply_text(stats_text, parse_mode='Markdown')
-    
     async def show_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE, page=1):
-        user_id = update.effective_user.id
+        # Check if this is from a button callback
+        if hasattr(update, 'callback_query') and update.callback_query:
+            user_id = update.callback_query.from_user.id
+            is_callback = True
+        else:
+            user_id = update.effective_user.id
+            is_callback = False
+        
         conn = self.db.get_connection()
         cursor = conn.cursor()
         
@@ -845,7 +940,7 @@ class DebtBot:
         ''', (user_id, user_id))
         
         total_count = cursor.fetchone()['total']
-        total_pages = (total_count + per_page - 1) // per_page
+        total_pages = max(1, (total_count + per_page - 1) // per_page)
         
         # Get paginated results
         cursor.execute('''
@@ -862,7 +957,10 @@ class DebtBot:
         conn.close()
         
         if not debts:
-            await update.message.reply_text("📜 Tarix bo'sh.")
+            if is_callback:
+                await update.callback_query.message.reply_text("📜 Tarix bo'sh.")
+            else:
+                await update.message.reply_text("📜 Tarix bo'sh.")
             return
         
         message = f"📜 *Tarix (sahifa {page}/{total_pages}):*\n\n"
@@ -874,9 +972,9 @@ class DebtBot:
             message += f"{emoji} *#{d['id']}* "
             
             if d['debtor_id'] == user_id:
-                message += f"{d['creditor_name'] or d['creditor_username']}ga qarzdor\n"
+                message += f"{d['creditor_name'] or d.get('creditor_username', 'Noma\'lum')}ga qarzdor\n"
             else:
-                message += f"{d['debtor_name'] or d['debtor_username']}dan qarz\n"
+                message += f"{d['debtor_name'] or d.get('debtor_username', 'Noma\'lum')}dan qarz\n"
             
             message += f"   💰 {d['amount']:,} so'm\n   📝 {d['reason']}\n"
             message += f"   📅 {d['created_at'][:10]}\n\n"
@@ -899,7 +997,10 @@ class DebtBot:
         
         reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
         
-        await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+        if is_callback:
+            await update.callback_query.message.edit_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
     
     async def send_reminder_callback(self, query, data):
         debt_id = int(data.replace('remind_', ''))
@@ -986,16 +1087,7 @@ class DebtBot:
         elif text == "💵 Menga qarzlar":
             await self.show_owed_to_me(update, context)
         elif text == "📜 Tarix":
-            # Check if pagination requested
-            if user_id in self.user_context and self.user_context[user_id].get('action') == 'history_page':
-                # Handle page number
-                try:
-                    page = int(text)
-                    await self.show_history(update, context, page=page)
-                except:
-                    await self.show_history(update, context, page=1)
-            else:
-                await self.show_history(update, context, page=1)
+            await self.show_history(update, context, page=1)
         elif text == "ℹ️ Yordam":
             await self.help_command(update, context)
         elif text == "📊 Statistika":
@@ -1135,11 +1227,11 @@ class DebtBot:
                     f"Masalan: @username"
                 )
             else:
-                # All usernames collected, show final confirmation
+                # All usernames collected
                 group_debts = user_ctx['group_debts']
                 debtor_usernames = user_ctx['debtor_usernames']
                 
-                # Update group debts with collected usernames
+                # Update group debts with ALL collected usernames
                 for debt in group_debts:
                     debtor_name = debt['debtor_name']
                     if debtor_name in debtor_usernames:
@@ -1147,6 +1239,19 @@ class DebtBot:
                         debt['debtor_id'] = user_info['user_id']
                         debt['debtor_username'] = user_info['username']
                 
+                # Use the helper function
+                class FakeQuery:
+                    def __init__(self, user_id, message):
+                        self.from_user = type('obj', (object,), {'id': user_id})
+                        self.message = message
+                    
+                    async def edit_message_text(self, *args, **kwargs):
+                        await self.message.reply_text(*args, **kwargs)
+                
+                fake_query = FakeQuery(user_id, update.message)
+                await self.show_final_group_confirmation(fake_query, group_debts)
+                del self.user_context[user_id]
+            
                 # Show final confirmation
                 confirmation_text = "✅ *Yakuniy tasdiqlash:*\n\n"
                 total = 0
