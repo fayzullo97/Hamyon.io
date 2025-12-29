@@ -965,20 +965,20 @@ class DebtBot:
         
         message = f"📜 *Tarix (sahifa {page}/{total_pages}):*\n\n"
         status_emoji = {'pending': '🟡', 'active': '🔵', 'paid': '✅', 'cancelled': '❌'}
-        
         for debt in debts:
             d = dict(debt)
             emoji = status_emoji.get(d['status'], '⚪')
             message += f"{emoji} *#{d['id']}* "
             
             if d['debtor_id'] == user_id:
-                message += f"{d['creditor_name'] or d.get('creditor_username', "Noma`lum")}ga qarzdor\n"
+                creditor_display = d.get('creditor_name') or d.get('creditor_username', 'Noma\'lum')
+                message += f"{creditor_display}ga qarzdor\n"
             else:
-                message += f"{d['debtor_name'] or d.get('debtor_username', "Noma`lum")}dan qarz\n"
-            message += f"   💰 {d['amount']:,} so`m\n   📝 {d['reason']}\n"
-            message += f"   📅 {d['created_at'][:10]}\n\n"
+                debtor_display = d.get('debtor_name') or d.get('debtor_username', 'Noma\'lum')
+                message += f"{debtor_display}dan qarz\n"
             
-            message += f"   💰 {d['amount']:,} so`m\n   📝 {d['reason']}\n"
+            message += f"   💰 {d['amount']:,} so'm\n"
+            message += f"   📝 {d['reason']}\n"
             message += f"   📅 {d['created_at'][:10]}\n\n"
         
         message += f"━━━━━━━━━━━━━━━━\n"
