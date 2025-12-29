@@ -370,6 +370,16 @@ class Database:
         
         return payment_id
     
+    def link_debt_to_user(self, debt_id, role, user_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if role == 'debtor':
+            cursor.execute('UPDATE debts SET debtor_id = ? WHERE id = ?', (user_id, debt_id))
+        elif role == 'creditor':
+            cursor.execute('UPDATE debts SET creditor_id = ? WHERE id = ?', (user_id, debt_id))
+        conn.commit()
+        conn.close()
+
     def confirm_payment(self, payment_id):
         """Confirm a payment"""
         conn = self.get_connection()
