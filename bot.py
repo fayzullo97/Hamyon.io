@@ -323,39 +323,44 @@ class DebtBot:
             return
         
         if split_type == 'equal':
-            per_person = total_amount / (num_debtors + 1)  # Total participants = debtors + payer
+            per_person = total_amount / (num_debtors + 1)
             my_share = per_person
+            total_to_receive = total_amount - my_share
+            
             group_debts = []
             for debtor in debtors:
                 group_debts.append({
                     'direction': 'owe_me',
                     'creditor_name': payer_name,
-                    'debtor_name': debtor,
+                    'debtor_name': debtor,  # ← This is critical!
                     'amount': per_person,
                     'currency': currency,
                     'reason': reason
                 })
-            
-            # Store for confirmation
+
             self.user_context[user_id] = {
                 'action': 'confirm_group',
                 'group_debts': group_debts,
-                'processing_msg_id': processing_msg_id,
                 'my_share': my_share,
-                'total_to_receive': total_amount - my_share
+                'total_to_receive': total_to_receive,
+                'processing_msg_id': processing_msg_id
             }
             
-            confirmation_text = f"✅ Teng bo'lish:\n\n"
+            confirmation_text = f"✅ *Teng bo'lish:*\n\n"
             confirmation_text += f"💰 Jami to'langan: {total_amount:,.0f} so'm\n"
-            confirmation_text += f"👥 Kishilar: {num_debtors + 1} kishi\n"
+            confirmation_text += f"👥 Ishtirokchilar: {num_debtors + 1} kishi\n"
             confirmation_text += f"📌 Sizing ulushingiz: {my_share:,.0f} so'm\n"
-            confirmation_text += f"🔄 Qolgan {num_debtors} kishi sizga qaytarishi kerak: {total_amount - my_share:,.0f} so'm\n\n"
-            confirmation_text += f"Har bir kishi {per_person:,.0f} so'm to'lashi kerak.\n\nTasdiqlaysizmi?"
+            confirmation_text += f"🔄 Qolgan {num_debtors} kishi sizga qaytarishi kerak: {total_to_receive:,.0f} so'm\n\n"
+            confirmation_text += "*Batafsil:*\n"
+            for debtor in debtors:
+                confirmation_text += f"• {debtor}: {per_person:,.0f} so'm\n"
+            confirmation_text += "\nBu to'g'rimi?"
+            
             keyboard = [
                 [InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm_group")],
                 [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_group")]
             ]
-            await query.edit_message_text(confirmation_text, reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text(confirmation_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
         
         elif split_type == 'unequal':
             self.user_context[user_id] = {
@@ -372,7 +377,7 @@ class DebtBot:
             await query.edit_message_text(f"❓ {debtors[0]} qancha qaytarishi kerak? (so'm)")
     
     async def confirm_group_debts(self, query):
-        
+
         user_id = query.from_user.id
         user_ctx = self.user_context.get(user_id, {})
         group_debts = user_ctx.get('group_debts', [])
@@ -393,7 +398,7 @@ class DebtBot:
                 currency=debt_info['currency'],
                 reason=debt_info['reason'],
                 creditor_username=None,
-                debtor_username=None
+                debtor_username=debt_info.get('debtor_name')  # ← Save name here!
             )
             
             # AUTO-CONFIRM from your side (as creditor)
