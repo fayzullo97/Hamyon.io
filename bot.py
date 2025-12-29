@@ -308,43 +308,23 @@ class DebtBot:
         payer_name = debt_info.get('payer_name', '')
         total_amount = debt_info.get('total_amount', 0)
         reason = debt_info.get('reason', 'Umumiy xarajat')
+        currency = debt_info.get('currency', "so'm")
         
         # Assume "Men" means the current user
         if payer_name.lower() == 'men':
             payer_name = query.from_user.first_name
         
-        # Filter out payer from participants
+        # Filter out payer from participants to get debtors
         debtors = [p for p in participants if p.lower() not in ['men', payer_name.lower()]]
         num_debtors = len(debtors)
-
-        # Check if this matches an existing circle
-        circle_id = self.db.find_circle_by_members(user_id, debtors)
-
-        if not circle_id and not user_ctx.get('circle_asked'):
-            # Ask for circle name
-            self.user_context[user_id]['circle_asked'] = True
-            self.user_context[user_id]['split_type'] = split_type
-            
-            keyboard = [
-                [InlineKeyboardButton("👔 Hamkasblar", callback_data="circle_colleagues")],
-                [InlineKeyboardButton("👫 Do'stlar", callback_data="circle_friends")],
-                [InlineKeyboardButton("👨‍👩‍👧 Oila", callback_data="circle_family")],
-                [InlineKeyboardButton("⏭️ O'tkazib yuborish", callback_data=f"skip_circle_{split_type}")]
-            ]
-            
-            await query.edit_message_text(
-                "👥 Bu kishilar qaysi guruhga tegishli?\n\n"
-                "Keyingi safar avtomatik taniy olaman:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+        
+        if num_debtors == 0:
+            await query.edit_message_text("❌ Boshqa ishtirokchilar topilmadi.")
             return
-
+        
         if split_type == 'equal':
-            # Calculate per person amount (including payer)
-            num_people = len(participants)
-            per_person = total_amount / num_people
-            
-            # Payer's share is already paid, others owe their share to payer
+            per_person = total_amount / (num_debtors + 1)  # Total participants = debtors + payer
+            my_share = per_person
             group_debts = []
             for debtor in debtors:
                 group_debts.append({
@@ -352,59 +332,44 @@ class DebtBot:
                     'creditor_name': payer_name,
                     'debtor_name': debtor,
                     'amount': per_person,
-                    'currency': 'so\'m',
+                    'currency': currency,
                     'reason': reason
                 })
             
-            # Store group debts for confirmation
+            # Store for confirmation
             self.user_context[user_id] = {
                 'action': 'confirm_group',
                 'group_debts': group_debts,
-                'processing_msg_id': processing_msg_id
+                'processing_msg_id': processing_msg_id,
+                'my_share': my_share,
+                'total_to_receive': total_amount - my_share
             }
             
-            confirmation_text = (
-                f"✅ Teng bo'lish:\n\n"
-                f"💰 Jami: {total_amount:,.0f} so'm\n"
-                f"👥 Kishilar soni: {num_people}\n"
-                f"💵 Har bir kishi: {per_person:,.0f} so'm\n\n"
-                f"Siz {payer_name} sifatida {per_person:,.0f} so'm to'ladingiz (sizning ulushingiz).\n"
-                f"Qolgan {len(debtors)} kishi har biri sizga {per_person:,.0f} so'm to'lashi kerak.\n\n"
-                f"Tasdiqlaysizmi?"
-            )
+            confirmation_text = f"✅ Teng bo'lish:\n\n"
+            confirmation_text += f"💰 Jami to'langan: {total_amount:,.0f} so'm\n"
+            confirmation_text += f"👥 Kishilar: {num_debtors + 1} kishi\n"
+            confirmation_text += f"📌 Sizing ulushingiz: {my_share:,.0f} so'm\n"
+            confirmation_text += f"🔄 Qolgan {num_debtors} kishi sizga qaytarishi kerak: {total_amount - my_share:,.0f} so'm\n\n"
+            confirmation_text += f"Har bir kishi {per_person:,.0f} so'm to'lashi kerak.\n\nTasdiqlaysizmi?"
             keyboard = [
                 [InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm_group")],
                 [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_group")]
             ]
             await query.edit_message_text(confirmation_text, reply_markup=InlineKeyboardMarkup(keyboard))
-
+        
         elif split_type == 'unequal':
-            # Calculate how much others should pay back (excluding payer's own share)
-            num_people = len(participants)
-            payer_share = total_amount / num_people
-            amount_to_split = total_amount - payer_share  # Others pay back this amount
-            
             self.user_context[user_id] = {
                 'action': 'unequal_split',
                 'debtors': debtors,
                 'current_debtor_index': 0,
-                'amounts': [0] * len(debtors),
-                'total_amount': amount_to_split,  # Changed: split only what others owe
-                'original_total': total_amount,
-                'payer_share': payer_share,
+                'amounts': [0] * num_debtors,
+                'total_amount': total_amount,
                 'payer_name': payer_name,
                 'reason': reason,
+                'currency': currency,
                 'processing_msg_id': processing_msg_id
             }
-            
-            await query.edit_message_text(
-                f"📊 *Turli bo'lish:*\n\n"
-                f"💰 Jami to'langan: {total_amount:,.0f} so'm\n"
-                f"👥 Kishilar: {num_people} kishi\n"
-                f"📌 Sizning ulushingiz: {payer_share:,.0f} so'm\n\n"
-                f"Qolgan {len(debtors)} kishi sizga qaytarishi kerak: {amount_to_split:,.0f} so'm\n\n"
-                f"❓ {debtors[0]} qancha qaytarishi kerak? (so'm)"
-            )
+            await query.edit_message_text(f"❓ {debtors[0]} qancha qaytarishi kerak? (so'm)")
     async def confirm_group_debts(self, query):
         """Collect usernames before creating group debts - auto-detect from circles"""
         user_id = query.from_user.id
