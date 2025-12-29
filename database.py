@@ -5,7 +5,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Database:
-    def __init__(self, db_name='debt_manager.db'):
+    def __init__(self, db_name='/app/data/debt_manager.db'):
         self.db_name = db_name
         self.init_database()
     
