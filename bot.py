@@ -1,4 +1,5 @@
 import os
+import io
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -141,47 +142,63 @@ class DebtBot:
         # Existing handle_text code...
     
     async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
+        user = update.effective_user
+        processing_msg = await update.message.reply_text("🎤 Ovozli xabaringizni tinglayapman...")
         
-        if user_id in self.user_context and self.user_context[user_id].get('action') == 'onboarding_names':
-            # Parse voice for names
+        try:
             voice = update.message.voice
             file = await context.bot.get_file(voice.file_id)
-            voice_path = f"voice_{user_id}_{datetime.now().timestamp()}.ogg"
-            await file.download_to_drive(voice_path)
+            buffer = io.BytesIO()
+            await file.download_to_memory(buffer)
+            buffer.seek(0)  # Reset buffer position
             
-            with open(voice_path, "rb") as audio_file:
-                transcript = client.audio.transcriptions.create(model="whisper-1",file=audio_file)
-            transcribed_text = transcript.text
-            os.remove(voice_path)
-            
-            # Use GPT to extract names
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "Matndan faqat ism va familiyalarni ajratib chiqaring. JSON ro'yxat qaytaring: {\"names\": [\"Ism1\", \"Ism2\"]} "},
-                    {"role": "user", "content": transcribed_text}
-                ]
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=("voice.ogg", buffer.read(), "audio/ogg")
             )
+            transcribed_text = transcript.text
             
-            content = response.choices[0].message.content.strip()
-            try:
-                result = json.loads(content)
-                names = result.get('names', [])
-                if not names:
-                    await update.message.reply_text("❌ Ismlar topilmadi. Qaytadan urinib ko'ring yoki 'Skip'.")
-                    return
-                
-                user_ctx = self.user_context[user_id]
-                user_ctx['names'] = names
-                user_ctx['current_name_index'] = 0
-                user_ctx['action'] = 'onboarding_username'
-                await self.ask_next_username(update, context)
-            except:
-                await update.message.reply_text("❌ Xatolik. Matn yuboring.")
-            return
-        
-        # Existing handle_voice code...
+            await processing_msg.edit_text(f"📝 Matn: _{transcribed_text}_\n\n⏳ Tahlil qilyapman...", parse_mode='Markdown')
+            
+            debt_info = await self.parse_debt_info(transcribed_text, user)
+            
+            if debt_info.get('clarification_needed'):
+                # Store context for clarification response
+                self.user_context[user.id] = {
+                    'action': 'clarification',
+                    'original_text': transcribed_text,
+                    'processing_msg_id': processing_msg.message_id
+                }
+                await processing_msg.edit_text(debt_info['clarification_question'])
+                return
+            
+            if debt_info.get('error'):
+                await processing_msg.edit_text(f"❌ {debt_info['error']}\n\nIltimos, qaytadan urinib ko'ring.")
+                return
+            
+            if debt_info.get('is_group'):
+                self.user_context[user.id] = {
+                    'action': 'split_type',
+                    'debt_info': debt_info,
+                    'processing_msg_id': processing_msg.message_id
+                }
+                keyboard = [
+                    [InlineKeyboardButton("🟰 Teng bo'lish", callback_data="split_equal")],
+                    [InlineKeyboardButton("📊 Turli bo'lish", callback_data="split_unequal")]
+                ]
+                await processing_msg.edit_text("❓ Umumiy xarajatlarni qanday bo'lish kerak?", reply_markup=InlineKeyboardMarkup(keyboard))
+                return
+            
+            missing = self.check_missing_info(debt_info)
+            if missing:
+                await self.request_missing_info(update, context, debt_info, missing, processing_msg)
+                return
+            
+            await self.create_debt_confirmation(update, context, debt_info, processing_msg)
+            
+        except Exception as e:
+            logger.error(f"Error processing voice: {e}")
+            await processing_msg.edit_text(f"❌ Xatolik yuz berdi: {str(e)[:100]}")
     
     async def ask_next_username(self, update, context):
         user_id = update.effective_user.id
