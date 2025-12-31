@@ -617,33 +617,47 @@ class DebtBot:
             return
         
         created_count = 0
-        
+
         for debt_info in group_debts:
-            # Create debt
+
+            debtor_user_id = None
+            debtor_username = debt_info.get('debtor_username')
+
+            # 1️⃣ Try onboarding circle FIRST
+            circle_member = self.db.find_circle_member(user_id, debt_info['debtor_name'])
+            if circle_member:
+                debtor_user_id = circle_member.get('member_user_id')
+                debtor_username = circle_member.get('member_username')
+
+            # 2️⃣ Fallback: global username lookup
+            if not debtor_user_id and debtor_username:
+                user = self.db.find_user_by_username(debtor_username)
+                if user:
+                    debtor_user_id = user['user_id']
+
+            # 3️⃣ Create debt WITH resolved debtor
             created_debt_id = self.db.create_debt(
                 creator_id=user_id,
-                creditor_id=user_id,  # You are creditor
-                debtor_id=None,  # Will be filled later if user registers
+                creditor_id=user_id,
+                debtor_id=debtor_user_id,
                 amount=debt_info['amount'],
                 currency=debt_info['currency'],
                 reason=debt_info['reason'],
                 creditor_username=None,
-                debtor_username=debt_info.get('debtor_username')
+                debtor_username=debtor_username
             )
-            
-            # AUTO-CONFIRM from your side (as creditor)
+
+            # 4️⃣ Auto-confirm creditor
             self.db.confirm_debt(created_debt_id, user_id)
-            
-            # Try to find and link debtor if already in DB
-            debtor_username = debt_info.get('debtor_username')
-            debtor = self.db.find_user_by_username(debtor_username) if debtor_username else None
-            if debtor:
-                self.db.link_debt_to_user(created_debt_id, 'debtor', debtor['user_id'])
-                # Optionally notify them
+
+            # 5️⃣ Notify debtor if linked
+            if debtor_user_id:
                 try:
                     await query.get_bot().send_message(
-                        debtor['user_id'],
-                        f"🔔 Yangi qarz:\n{debt_info['debtor_name']} sizga {debt_info['amount']:,} so'm qaytarishi kerak.\nSabab: {debt_info['reason']}\n\nTasdiqlang yoki rad eting.",
+                        debtor_user_id,
+                        f"🔔 Yangi qarz:\n"
+                        f"Siz {debt_info['amount']:,} so'm qaytarishingiz kerak.\n"
+                        f"Sabab: {debt_info['reason']}",
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"accept_debt_{created_debt_id}"),
                             InlineKeyboardButton("❌ Rad etish", callback_data=f"dispute_debt_{created_debt_id}")
@@ -651,9 +665,9 @@ class DebtBot:
                     )
                 except:
                     pass
-            
+
             created_count += 1
-        
+
         result_text = f"✅ {created_count} ta qarz muvaffaqiyatli yaratildi!\n\n"
         result_text += f"📌 Sizing ulushingiz: {my_share:,.0f} so'm\n"
         result_text += f"🔄 Qolganlar sizga jami {sum(d['amount'] for d in group_debts):,.0f} so'm qaytarishi kerak."
