@@ -89,7 +89,27 @@ class DebtBot:
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
         user_id = update.effective_user.id
+        logger.info(f"Received text: '{text}' from user {user_id}")
         
+        if text == "💰 Men qarzdorman":
+            await self.show_i_owe(update, context)
+        elif text == "💵 Menga qarzlar":
+            await self.show_owed_to_me(update, context)
+        elif text == "📜 Tarix":
+            await self.show_history(update, context)
+        elif text == "📊 Statistika":
+            await self.show_statistics(update, context)
+        elif text == "ℹ️ Yordam":
+            await self.help_command(update, context)
+        else:
+            if user_id in self.user_context:
+                await self.handle_context_response(update, context)
+            else:
+                await update.message.reply_text(
+                    "📱 Iltimos, qarz haqida *ovozli xabar* yuboring.\n\n"
+                    "Yoki quyidagi tugmalardan foydalaning:",
+                    parse_mode='Markdown'
+                )
         if user_id in self.user_context:
             user_ctx = self.user_context[user_id]
             
