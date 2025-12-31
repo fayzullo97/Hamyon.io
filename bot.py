@@ -1100,93 +1100,51 @@ class DebtBot:
                      f"📊 Balans: {(total_owed - total_owe):+,} so'm")
         
         await update.message.reply_text(stats_text, parse_mode='Markdown')
-    async def show_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE, page=1):
-        # Check if this is from a button callback
-        if hasattr(update, 'callback_query') and update.callback_query:
-            user_id = update.callback_query.from_user.id
-            is_callback = True
-        else:
-            user_id = update.effective_user.id
-            is_callback = False
-        
+    
+    async def show_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
         conn = self.db.get_connection()
         cursor = conn.cursor()
         
-        # Pagination settings
-        per_page = 10
-        offset = (page - 1) * per_page
-        
-        # Get total count
         cursor.execute('''
-            SELECT COUNT(*) as total
-            FROM debts d
-            WHERE d.creditor_id = ? OR d.debtor_id = ?
-        ''', (user_id, user_id))
-        
-        total_count = cursor.fetchone()['total']
-        total_pages = max(1, (total_count + per_page - 1) // per_page)
-        
-        # Get paginated results
-        cursor.execute('''
-            SELECT d.*, c.first_name as creditor_name, b.first_name as debtor_name
+            SELECT d.*, 
+                c.first_name as creditor_first_name, c.username as creditor_db_username,
+                b.first_name as debtor_first_name, b.username as debtor_db_username,
+                d.creditor_username, d.debtor_username
             FROM debts d
             LEFT JOIN users c ON d.creditor_id = c.user_id
             LEFT JOIN users b ON d.debtor_id = b.user_id
-            WHERE d.creditor_id = ? OR d.debtor_id = ?
-            ORDER BY d.created_at DESC
-            LIMIT ? OFFSET ?
-        ''', (user_id, user_id, per_page, offset))
+            WHERE d.creator_id = ? OR d.creditor_id = ? OR d.debtor_id = ?
+            ORDER BY d.created_at DESC LIMIT 20
+        ''', (user_id, user_id, user_id))
         
         debts = cursor.fetchall()
         conn.close()
         
         if not debts:
-            if is_callback:
-                await update.callback_query.message.reply_text("📜 Tarix bo'sh.")
-            else:
-                await update.message.reply_text("📜 Tarix bo'sh.")
+            await update.message.reply_text("📜 Tarix bo'sh.")
             return
         
-        message = f"📜 *Tarix (sahifa {page}/{total_pages}):*\n\n"
+        message = "📜 *Tarix (oxirgi 20):*\n\n"
         status_emoji = {'pending': '🟡', 'active': '🔵', 'paid': '✅', 'cancelled': '❌'}
+        
         for debt in debts:
             d = dict(debt)
             emoji = status_emoji.get(d['status'], '⚪')
             message += f"{emoji} *#{d['id']}* "
             
-            if d['debtor_id'] == user_id:
-                creditor_display = d.get('creditor_name') or d.get('creditor_username', 'Noma\'lum')
-                message += f"{creditor_display}ga qarzdor\n"
-            else:
-                debtor_display = d.get('debtor_name') or d.get('debtor_username', 'Noma\'lum')
-                message += f"{debtor_display}dan qarz\n"
+            creditor_name = d['creditor_first_name'] or d['creditor_username'] or d['creditor_db_username'] or 'Noma\'lum'
+            debtor_name = d['debtor_first_name'] or d['debtor_username'] or d['debtor_db_username'] or 'Noma\'lum'
             
-            message += f"   💰 {d['amount']:,} so'm\n"
-            message += f"   📝 {d['reason']}\n"
-            message += f"   📅 {d['created_at'][:10]}\n\n"
+            if d['debtor_id'] == user_id or d['debtor_username']:
+                message += f"{creditor_name}ga qarzdor\n"
+            else:
+                message += f"{debtor_name}dan qarz\n"
+            
+            message += f"   💰 {d['amount']:,} so'm\n   📝 {d['reason']}\n"
+            message += f"   📅 {d['created_at'][:10]}\n   Status: {d['status']}\n\n"
         
-        message += f"━━━━━━━━━━━━━━━━\n"
-        message += f"📄 Sahifa {page} / {total_pages}\n"
-        message += f"📊 Jami: {total_count} ta yozuv"
-        
-        # Add pagination buttons
-        keyboard = []
-        nav_buttons = []
-        
-        if page > 1:
-            nav_buttons.append(InlineKeyboardButton("⬅️ Oldingi", callback_data=f"history_{page-1}"))
-        if page < total_pages:
-            nav_buttons.append(InlineKeyboardButton("Keyingi ➡️", callback_data=f"history_{page+1}"))
-        
-        if nav_buttons:
-            keyboard.append(nav_buttons)
-        
-        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-        
-        if is_callback:
-            await update.callback_query.message.edit_text(message, parse_mode='Markdown', reply_markup=reply_markup)
-        else:
-            await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+        await update.message.reply_text(message, parse_mode='Markdown')
     
     async def send_reminder_callback(self, query, data):
         debt_id = int(data.replace('remind_', ''))
