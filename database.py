@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from datetime import datetime
 import logging
@@ -7,6 +8,7 @@ logger = logging.getLogger(__name__)
 class Database:
     def __init__(self, db_name='/app/data/debt_manager.db'):
         self.db_name = db_name
+        os.makedirs(os.path.dirname(self.db_name), exist_ok=True)
         self.init_database()
     
     def get_connection(self):
