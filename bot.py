@@ -26,6 +26,27 @@ class DebtBot:
         if user.username:
             self.db.link_pending_debts(f'@{user.username}', user.id)
         
+        # Check if new user (no circles)
+        circles = self.db.get_user_circles(user.id)
+        if not circles:
+            # Start onboarding
+            self.user_context[user.id] = {
+                'action': 'onboarding_start',
+                'categories': ['Hamkasblar', 'Do\'stlar', 'Sinfdoshlar', 'Oila a\'zolari'],
+                'current_category_index': 0,
+                'names': []
+            }
+            keyboard = [
+                [InlineKeyboardButton("✅ Ha, kiritaman", callback_data="onboard_yes")],
+                [InlineKeyboardButton("❌ O'tkazib yuborish", callback_data="onboard_skip")]
+            ]
+            await update.message.reply_text(
+                "👋 Birinchi marta botdan foydalanayotganingiz uchun, tez-tez umumiy xarajatlar qiladigan odamlaringizni kiritishingizni tavsiya qilamiz.\n\n"
+                "Bu kelajakda qarzlarni tezroq qayd qilishga yordam beradi.\n\nKiritmoqchimisiz?",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+        
         keyboard = [[KeyboardButton("💰 Men qarzdorman"), KeyboardButton("💵 Menga qarzlar")],
                     [KeyboardButton("📜 Tarix"), KeyboardButton("📊 Statistika")],
                     [KeyboardButton("ℹ️ Yordam")]]
@@ -45,6 +66,219 @@ class DebtBot:
         
         await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=reply_markup)    
     
+    async def onboard_callback(self, query, data):
+        user_id = query.from_user.id
+        user_ctx = self.user_context.get(user_id, {})
+        
+        if data == 'onboard_skip':
+            del self.user_context[user_id]
+            await query.edit_message_text("✅ Onboarding o'tkazib yuborildi. Botdan foydalanishingiz mumkin!")
+            # Send welcome
+            await self.send_welcome(query.message)
+            return
+        
+        if data == 'onboard_yes':
+            category = user_ctx['categories'][user_ctx['current_category_index']]
+            await query.edit_message_text(f"📂 {category} ro'yxatini kiriting:\n\nIsmlarni matn sifatida yozing yoki ovozli xabar yuboring (masalan: 'Murad, Ibrohim, Asadbek').\n\nO'tkazib yuborish uchun 'Skip' yozing.")
+            user_ctx['action'] = 'onboarding_names'
+            return
+        
+        # Other onboarding callbacks if needed
+    
+    async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = update.message.text
+        user_id = update.effective_user.id
+        
+        if user_id in self.user_context:
+            user_ctx = self.user_context[user_id]
+            
+            if user_ctx.get('action') == 'onboarding_names':
+                if text.lower() == 'skip':
+                    await self.next_onboarding_category(update, context)
+                    return
+                
+                names = [n.strip() for n in text.split(',') if n.strip()]
+                if not names:
+                    await update.message.reply_text("❌ Hech qanday ism kiritilmadi. Qaytadan kiriting yoki 'Skip'.")
+                    return
+                
+                user_ctx['names'] = names
+                user_ctx['current_name_index'] = 0
+                user_ctx['action'] = 'onboarding_username'
+                await self.ask_next_username(update, context)
+                return
+            
+            if user_ctx.get('action') == 'onboarding_username':
+                username = text.strip()
+                if username.lower() == 'skip':
+                    await self.next_onboarding_category(update, context)
+                    return
+                
+                category = user_ctx['categories'][user_ctx['current_category_index']]
+                circle_id = self.db.create_circle(user_id, category)
+                
+                name = user_ctx['names'][user_ctx['current_name_index']]
+                member_user_id = None
+                if username.startswith('@'):
+                    clean_username = username[1:]
+                    user = self.db.find_user_by_username(clean_username)
+                    if user:
+                        member_user_id = user['user_id']
+                else:
+                    clean_username = username
+                
+                self.db.add_member_to_circle(circle_id, name, member_user_id, clean_username)
+                
+                await update.message.reply_text(f"✅ {name} uchun {username} saqlandi.")
+                
+                if user_ctx['current_name_index'] + 1 < len(user_ctx['names']):
+                    user_ctx['current_name_index'] += 1
+                    await self.ask_next_username(update, context)
+                else:
+                    await self.next_onboarding_category(update, context)
+                return
+        
+        # Existing handle_text code...
+    
+    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        
+        if user_id in self.user_context and self.user_context[user_id].get('action') == 'onboarding_names':
+            # Parse voice for names
+            voice = update.message.voice
+            file = await context.bot.get_file(voice.file_id)
+            voice_path = f"voice_{user_id}_{datetime.now().timestamp()}.ogg"
+            await file.download_to_drive(voice_path)
+            
+            with open(voice_path, "rb") as audio_file:
+                transcript = client.audio.transcriptions.create(model="whisper-1",file=audio_file)
+            transcribed_text = transcript.text
+            os.remove(voice_path)
+            
+            # Use GPT to extract names
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Matndan faqat ism va familiyalarni ajratib chiqaring. JSON ro'yxat qaytaring: {\"names\": [\"Ism1\", \"Ism2\"]} "},
+                    {"role": "user", "content": transcribed_text}
+                ]
+            )
+            
+            content = response.choices[0].message.content.strip()
+            try:
+                result = json.loads(content)
+                names = result.get('names', [])
+                if not names:
+                    await update.message.reply_text("❌ Ismlar topilmadi. Qaytadan urinib ko'ring yoki 'Skip'.")
+                    return
+                
+                user_ctx = self.user_context[user_id]
+                user_ctx['names'] = names
+                user_ctx['current_name_index'] = 0
+                user_ctx['action'] = 'onboarding_username'
+                await self.ask_next_username(update, context)
+            except:
+                await update.message.reply_text("❌ Xatolik. Matn yuboring.")
+            return
+        
+        # Existing handle_voice code...
+    
+    async def ask_next_username(self, update, context):
+        user_id = update.effective_user.id
+        user_ctx = self.user_context[user_id]
+        name = user_ctx['names'][user_ctx['current_name_index']]
+        await update.message.reply_text(f"👤 {name} uchun username kiriting (@ bilan yoki oddiy ism).\n\nO'tkazib yuborish uchun 'Skip'.")
+    
+    async def next_onboarding_category(self, update, context):
+        user_id = update.effective_user.id
+        user_ctx = self.user_context[user_id]
+        
+        if user_ctx['current_category_index'] + 1 < len(user_ctx['categories']):
+            user_ctx['current_category_index'] += 1
+            user_ctx['names'] = []
+            category = user_ctx['categories'][user_ctx['current_category_index']]
+            await update.message.reply_text(f"📂 {category} ro'yxatini kiriting:\n\nIsmlarni matn sifatida yozing yoki ovozli xabar yuboring.\n\nO'tkazib yuborish uchun 'Skip'.")
+            user_ctx['action'] = 'onboarding_names'
+        else:
+            del self.user_context[user_id]
+            await update.message.reply_text("✅ Onboarding tugallandi! Botdan foydalanishingiz mumkin.")
+            await self.send_welcome(update.message)
+    
+    async def send_welcome(self, message):
+        # Your welcome message code here
+        pass  # Replace with actual welcome
+    
+    # In handle_group_split or after parsing is_group
+    async def process_group_participants(self, update, context, debt_info, processing_msg):
+        user_id = update.effective_user.id
+        participants = debt_info.get('participants', [])
+        
+        resolved = {}
+        unresolved = []
+        
+        for name in participants:
+            matches = self.db.search_member_by_name(user_id, name)
+            if matches:
+                if len(matches) == 1:
+                    # Confirm
+                    self.user_context[user_id] = {
+                        'action': 'confirm_match',
+                        'name': name,
+                        'match': matches[0],
+                        'debt_info': debt_info,
+                        'processing_msg_id': processing_msg.message_id
+                    }
+                    keyboard = [
+                        [InlineKeyboardButton("✅ Ha", callback_data=f"confirm_match_{name}")],
+                        [InlineKeyboardButton("❌ Yo'q", callback_data=f"no_match_{name}")]
+                    ]
+                    await update.message.reply_text(
+                        f"{name} uchun {matches[0]['circle_name']} dagi {matches[0]['member_username']}ni nazarda tutdingizmi?",
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                    return
+                else:
+                    # Multiple matches - choose
+                    keyboard = []
+                    for i, m in enumerate(matches):
+                        keyboard.append([InlineKeyboardButton(f"{m['circle_name']} - {m['member_username']}", callback_data=f"select_match_{i}_{name}")])
+                    await update.message.reply_text(f"{name} uchun bir nechta moslik topildi. Qaysi biri?", reply_markup=InlineKeyboardMarkup(keyboard))
+                    return
+            else:
+                unresolved.append(name)
+        
+        # For unresolved, ask usernames
+        if unresolved:
+            self.user_context[user_id] = {
+                'action': 'add_group_usernames',
+                'unresolved': unresolved,
+                'current_index': 0,
+                'usernames': [None] * len(unresolved),
+                'debt_info': debt_info,
+                'processing_msg_id': processing_msg.message_id
+            }
+            await update.message.reply_text(f"❓ {unresolved[0]} uchun username kiriting (@ bilan).")
+        else:
+            # All resolved - proceed to split
+            debt_info['resolved_participants'] = resolved
+            await self.handle_group_split(update, debt_info, processing_msg)
+
+    def search_member_by_name(self, user_id, name):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+    
+        cursor.execute('''
+            SELECT cm.*, uc.circle_name, u.user_id as linked_user_id, u.username as db_username
+            FROM circle_members cm
+            JOIN user_circles uc ON cm.circle_id = uc.id
+            LEFT JOIN users u ON cm.member_user_id = u.user_id
+            WHERE uc.user_id = ? AND (cm.member_name LIKE ? OR cm.member_username LIKE ? OR u.username LIKE ?)
+        ''', (user_id, f'%{name}%', f'%{name}%', f'%{name}%'))
+        
+        members = cursor.fetchall()
+        conn.close()
+        return [dict(m) for m in members]
+
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         help_text = ("📖 *Yordam*\n\n"
                     "*Qarz yaratish:*\n"
@@ -57,64 +291,6 @@ class DebtBot:
                     "📊 Statistika - Statistika")
         
         await update.message.reply_text(help_text, parse_mode='Markdown')
-    
-    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        processing_msg = await update.message.reply_text("🎤 Ovozli xabaringizni tinglayapman...")
-        
-        try:
-            voice = update.message.voice
-            file = await context.bot.get_file(voice.file_id)
-            voice_path = f"voice_{user.id}_{datetime.now().timestamp()}.ogg"
-            await file.download_to_drive(voice_path)
-        
-            with open(voice_path, "rb") as audio_file:
-                transcript = client.audio.transcriptions.create(model="whisper-1",file=audio_file)
-            transcribed_text = transcript.text
-            if os.path.exists(voice_path):
-                os.remove(voice_path)
-            
-            await processing_msg.edit_text(f"📝 Matn: _{transcribed_text}_\n\n⏳ Tahlil qilyapman...", parse_mode='Markdown')
-            
-            debt_info = await self.parse_debt_info(transcribed_text, user)
-            
-            if debt_info.get('clarification_needed'):
-                # Store context for clarification response
-                self.user_context[user.id] = {
-                    'action': 'clarification',
-                    'original_text': transcribed_text,
-                    'processing_msg_id': processing_msg.message_id
-                }
-                await processing_msg.edit_text(debt_info['clarification_question'])
-                return
-            
-            if debt_info.get('error'):
-                await processing_msg.edit_text(f"❌ {debt_info['error']}\n\nIltimos, qaytadan urinib ko'ring.")
-                return
-            
-            if debt_info.get('is_group'):
-                self.user_context[user.id] = {
-                    'action': 'split_type',
-                    'debt_info': debt_info,
-                    'processing_msg_id': processing_msg.message_id
-                }
-                keyboard = [
-                    [InlineKeyboardButton("🟰 Teng bo'lish", callback_data="split_equal")],
-                    [InlineKeyboardButton("📊 Turli bo'lish", callback_data="split_unequal")]
-                ]
-                await processing_msg.edit_text("❓ Umumiy xarajatlarni qanday bo'lish kerak?", reply_markup=InlineKeyboardMarkup(keyboard))
-                return
-            
-            missing = self.check_missing_info(debt_info)
-            if missing:
-                await self.request_missing_info(update, context, debt_info, missing, processing_msg)
-                return
-            
-            await self.create_debt_confirmation(update, context, debt_info, processing_msg)
-            
-        except Exception as e:
-            logger.error(f"Error processing voice: {e}")
-            await processing_msg.edit_text(f"❌ Xatolik yuz berdi: {str(e)[:100]}")
     
     async def parse_debt_info(self, text: str, user):
         try:
@@ -1033,68 +1209,7 @@ class DebtBot:
             await update.message.reply_text(f"✅ Kontakt qabul qilindi: {contact.first_name}")
         else:
             await update.message.reply_text(f"✅ Kontakt saqlandi: {contact.first_name}")
-    async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text
-        user_id = update.effective_user.id
-        
-        if text == "💰 Men qarzdorman":
-            await self.show_i_owe(update, context)
-        elif text == "💵 Menga qarzlar":
-            await self.show_owed_to_me(update, context)
-        elif text == "📜 Tarix":
-            await self.show_history(update, context, page=1)
-        elif text == "ℹ️ Yordam":
-            await self.help_command(update, context)
-        elif text == "📊 Statistika":
-            await self.show_statistics(update, context)
-        else:
-            # Check if user is in a context
-            if user_id in self.user_context:
-                await self.handle_context_response(update, context)
-            else:
-                # Try to parse text as debt
-                processing_msg = await update.message.reply_text("⏳ Tahlil qilyapman...")
-                debt_info = await self.parse_debt_info(text, update.effective_user)
-                
-                if debt_info.get('error'):
-                    await processing_msg.delete()
-                    await update.message.reply_text(
-                        "📱 Qarz yaratish uchun *ovozli xabar* yuboring.\n\n"
-                        "Yoki quyidagi tugmalardan foydalaning:",
-                        parse_mode='Markdown'
-                    )
-                    return
-                
-                # Handle parsed debt like voice message
-                if debt_info.get('clarification_needed'):
-                    self.user_context[user_id] = {
-                        'action': 'clarification',
-                        'original_text': text,
-                        'processing_msg_id': processing_msg.message_id
-                    }
-                    await processing_msg.edit_text(debt_info['clarification_question'])
-                    return
-                
-                if debt_info.get('is_group'):
-                    self.user_context[user_id] = {
-                        'action': 'split_type',
-                        'debt_info': debt_info,
-                        'processing_msg_id': processing_msg.message_id
-                    }
-                    keyboard = [
-                        [InlineKeyboardButton("🟰 Teng bo'lish", callback_data="split_equal")],
-                        [InlineKeyboardButton("📊 Turli bo'lish", callback_data="split_unequal")]
-                    ]
-                    await processing_msg.edit_text("❓ Umumiy xarajatlarni qanday bo'lish kerak?", reply_markup=InlineKeyboardMarkup(keyboard))
-                    return
-                
-                missing = self.check_missing_info(debt_info)
-                if missing:
-                    await self.request_missing_info(update, context, debt_info, missing, processing_msg)
-                    return
-                
-                await self.create_debt_confirmation(update, context, debt_info, processing_msg)
-    
+ 
     async def handle_context_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         text = update.message.text
