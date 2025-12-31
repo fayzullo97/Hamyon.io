@@ -566,6 +566,27 @@ class Database:
         conn.commit()
         conn.close()
         return user_id
+    def find_circle_member(self, owner_user_id, name):
+        """
+        Try to find a circle member by name for this user.
+        Returns dict with member_user_id / member_username if found.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT cm.member_user_id, cm.member_username
+            FROM circle_members cm
+            JOIN user_circles uc ON cm.circle_id = uc.id
+            WHERE uc.user_id = ?
+            AND LOWER(cm.member_name) = LOWER(?)
+            LIMIT 1
+        """, (owner_user_id, name))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        return dict(row) if row else None
 
     
     def find_circle_by_members(self, user_id, member_names):
