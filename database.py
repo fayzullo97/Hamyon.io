@@ -545,6 +545,29 @@ class Database:
         conn.close()
         return [dict(member) for member in members]
     
+    def ensure_user_by_username(self, username, display_name=None):
+        username = username.lstrip('@')
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT user_id FROM users WHERE username = ?', (username,))
+        row = cursor.fetchone()
+
+        if row:
+            conn.close()
+            return row['user_id']
+
+        cursor.execute('''
+            INSERT INTO users (username, first_name)
+            VALUES (?, ?)
+        ''', (username, display_name))
+
+        user_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return user_id
+
+    
     def find_circle_by_members(self, user_id, member_names):
         """Find circle that matches these members"""
         conn = self.get_connection()
