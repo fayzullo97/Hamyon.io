@@ -557,10 +557,11 @@ class DebtBot:
             
             group_debts = []
             for debtor in debtors:
-                group_debts.append({
+                group_debts.append({ 
                     'direction': 'owe_me',
                     'creditor_name': payer_name,
-                    'debtor_name': debtor,  # ← This is critical!
+                    'debtor_name': debtor,
+                    'debtor_username': debtor.lstrip('@') if debtor.startswith('@') else None,
                     'amount': per_person,
                     'currency': currency,
                     'reason': reason
@@ -616,6 +617,7 @@ class DebtBot:
             return
         
         created_count = 0
+        
         for debt_info in group_debts:
             # Create debt
             created_debt_id = self.db.create_debt(
@@ -626,14 +628,15 @@ class DebtBot:
                 currency=debt_info['currency'],
                 reason=debt_info['reason'],
                 creditor_username=None,
-                debtor_username=debt_info.get('debtor_name')  # ← Save name here!
+                debtor_username=debt_info.get('debtor_username')
             )
             
             # AUTO-CONFIRM from your side (as creditor)
             self.db.confirm_debt(created_debt_id, user_id)
             
             # Try to find and link debtor if already in DB
-            debtor = self.db.find_user_by_username(debt_info['debtor_name'])
+            debtor_username = debt_info.get('debtor_username')
+            debtor = self.db.find_user_by_username(debtor_username) if debtor_username else None
             if debtor:
                 self.db.link_debt_to_user(created_debt_id, 'debtor', debtor['user_id'])
                 # Optionally notify them
