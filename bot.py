@@ -203,10 +203,25 @@ class DebtBot:
             del self.user_context[user_id]
             await update.message.reply_text("✅ Onboarding tugallandi! Botdan foydalanishingiz mumkin.")
             await self.send_welcome(update.message)
-    
     async def send_welcome(self, message):
-        # Your welcome message code here
-        pass  # Replace with actual welcome
+        keyboard = [[KeyboardButton("💰 Men qarzdorman"), KeyboardButton("💵 Menga qarzlar")],
+                    [KeyboardButton("📜 Tarix"), KeyboardButton("📊 Statistika")],
+                    [KeyboardButton("ℹ️ Yordam")]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        welcome_text = ("👋 Salom!\n\n"
+                    "Men Telegram orqali qarzlar va umumiy xarajatlarni boshqarish botiman.\n\n"
+                    "🎤 *Ovozli xabar yuboring* va men:\n"
+                    "• Qarz yoki xarajatni qayd qilaman\n"
+                    "• Ishtirokchilarni bog'layman\n"
+                    "• Tasdiqlash so'rayman\n"
+                    "• Barcha ishtirokchilarga xabar beraman\n\n"
+                    "📝 *Misollar:*\n"
+                    '• "Alisher menga 50 ming so\'m qarz berdi lunch uchun"\n'
+                    '• "Men Dilnozaga 100 ming so\'m qarz berdim"\n\n'
+                    "Ovozli xabar yuboring!")
+        
+        await message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=reply_markup)
     
     # In handle_group_split or after parsing is_group
     async def process_group_participants(self, update, context, debt_info, processing_msg):
@@ -704,6 +719,9 @@ class DebtBot:
         query = update.callback_query
         await query.answer()
         data = query.data
+        if data.startswith('onboard_'):
+            await self.onboard_callback(query, data)
+            return
         if data.startswith('circle_'):
             circle_name = data.replace('circle_', '')
             user_ctx = self.user_context.get(query.from_user.id, {})
